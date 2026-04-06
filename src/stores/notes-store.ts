@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from './auth-store'
-import type { Note } from '../lib/types'
+import type { Note, FixedCategory } from '../lib/types'
 
 interface NotesState {
   notes: Note[]
@@ -9,7 +9,7 @@ interface NotesState {
   activeTabId: string | null
   isLoading: boolean
   loadNotes: () => Promise<void>
-  createNote: (categoryId?: string | null) => Promise<Note | null>
+  createNote: (categoryId?: FixedCategory | null) => Promise<Note | null>
   updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'category_id' | 'is_pinned' | 'is_archived'>>) => Promise<void>
   deleteNote: (id: string) => Promise<void>
   openTab: (noteId: string) => void
@@ -42,7 +42,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     set({ notes: (data ?? []) as Note[], isLoading: false })
   },
 
-  createNote: async (categoryId = null) => {
+  createNote: async (categoryId: FixedCategory | null = null) => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) return null
 

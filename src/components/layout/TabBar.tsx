@@ -1,11 +1,16 @@
 import { useState } from 'react'
 import { X, Plus } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
-import { useCategoriesStore } from '../../stores/categories-store'
+import { useUIStore } from '../../stores/ui-store'
+import { FIXED_CATEGORIES } from '../../lib/types'
 
 export default function TabBar() {
   const { openTabs, activeTabId, notes, setActiveTab, closeTab, createNote } = useNotesStore()
-  const selectedCategoryId = useCategoriesStore((s) => s.selectedCategoryId)
+  const selectedCategory = useUIStore((s) => s.selectedCategory)
+
+  const selectedCategoryLabel = selectedCategory
+    ? (FIXED_CATEGORIES.find((c) => c.id === selectedCategory)?.label ?? null)
+    : null
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
 
   const getTitle = (noteId: string) =>
@@ -18,13 +23,18 @@ export default function TabBar() {
         style={{ boxShadow: '0 1px 0 0 rgba(16, 185, 129, 0.4)' }}
       >
         <span className="pl-3 text-[12px] text-zinc-600">Nenhuma nota aberta</span>
-        <button
-          onClick={() => void createNote(selectedCategoryId)}
-          className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-600 transition-colors duration-150 hover:bg-zinc-900/50 hover:text-zinc-400"
-          title="Nova nota"
-        >
-          <Plus size={14} />
-        </button>
+        <div className="flex items-center">
+          {selectedCategoryLabel && (
+            <span className="text-[11px] text-zinc-600">em {selectedCategoryLabel}</span>
+          )}
+          <button
+            onClick={() => void createNote(selectedCategory)}
+            className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-600 transition-colors duration-150 hover:bg-zinc-900/50 hover:text-zinc-400"
+            title="Nova nota"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
       </div>
     )
   }
@@ -70,13 +80,18 @@ export default function TabBar() {
         )
       })}
 
-      <button
-        onClick={() => void createNote(selectedCategoryId)}
-        className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-600 transition-colors duration-150 hover:bg-zinc-900/50 hover:text-zinc-400"
-        title="Nova nota"
-      >
-        <Plus size={14} />
-      </button>
+      <div className="ml-auto flex items-center">
+        {selectedCategoryLabel && (
+          <span className="text-[11px] text-zinc-600">em {selectedCategoryLabel}</span>
+        )}
+        <button
+          onClick={() => void createNote(selectedCategory)}
+          className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-600 transition-colors duration-150 hover:bg-zinc-900/50 hover:text-zinc-400"
+          title="Nova nota"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
     </div>
   )
 }

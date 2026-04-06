@@ -38,6 +38,31 @@ export default function Editor() {
     }
   }, [])
 
+  // Custom events from MenuBar
+  useEffect(() => {
+    const handleForceSave = () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+      }
+      const id = activeNoteIdRef.current
+      if (!id) return
+      const title = extractTitle(localContent)
+      void updateNote(id, { content: localContent, title })
+    }
+
+    const handleSelectAll = () => {
+      textareaRef.current?.select()
+    }
+
+    window.addEventListener('force-save', handleForceSave)
+    window.addEventListener('select-all', handleSelectAll)
+    return () => {
+      window.removeEventListener('force-save', handleForceSave)
+      window.removeEventListener('select-all', handleSelectAll)
+    }
+  }, [localContent, updateNote])
+
   const handleScroll = useCallback(() => {
     if (lineNumbersRef.current && textareaRef.current) {
       lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop

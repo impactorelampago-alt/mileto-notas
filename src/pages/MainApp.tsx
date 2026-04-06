@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { useAuthStore } from '../stores/auth-store'
-import { useCategoriesStore } from '../stores/categories-store'
 import { useNotesStore } from '../stores/notes-store'
 import { useUIStore } from '../stores/ui-store'
 import Titlebar from '../components/layout/Titlebar'
@@ -13,16 +12,14 @@ import SearchBar from '../components/editor/SearchBar'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  const loadCategories = useCategoriesStore((s) => s.loadCategories)
   const loadNotes = useNotesStore((s) => s.loadNotes)
   const searchBarVisible = useUIStore((s) => s.searchBarVisible)
   const setSearchBarVisible = useUIStore((s) => s.setSearchBarVisible)
 
   useEffect(() => {
     if (!isAuthenticated) return
-    void loadCategories()
     void loadNotes()
-  }, [isAuthenticated, loadCategories, loadNotes])
+  }, [isAuthenticated, loadNotes])
 
   if (!isAuthenticated) return null
 

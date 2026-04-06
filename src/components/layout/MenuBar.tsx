@@ -53,6 +53,7 @@ export default function MenuBar() {
     toggleWordWrap, toggleLineNumbers, toggleStatusBar,
     increaseFontSize, decreaseFontSize, resetFontSize,
     searchBarVisible, setSearchBarVisible,
+    selectedCategory,
   } = useUIStore()
 
   // Keyboard shortcuts
@@ -62,7 +63,11 @@ export default function MenuBar() {
       switch (e.key) {
         case 'n':
           e.preventDefault()
-          void createNote()
+          void createNote(selectedCategory)
+          break
+        case 's':
+          e.preventDefault()
+          window.dispatchEvent(new Event('force-save'))
           break
         case 'w':
           e.preventDefault()
@@ -94,7 +99,7 @@ export default function MenuBar() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
-    activeTabId, createNote, closeTab, searchBarVisible,
+    activeTabId, createNote, closeTab, searchBarVisible, selectedCategory,
     setSearchBarVisible, signOut, increaseFontSize, decreaseFontSize, resetFontSize,
   ])
 
@@ -111,12 +116,12 @@ export default function MenuBar() {
 
   const FILE_MENU: MenuSection[] = [
     [
-      { label: 'Nova nota', icon: FilePlus, shortcut: 'Ctrl+N', onClick: () => void createNote() },
+      { label: 'Nova nota', icon: FilePlus, shortcut: 'Ctrl+N', onClick: () => { void createNote(selectedCategory) } },
       { label: 'Nova janela', icon: AppWindow, shortcut: 'Ctrl+Shift+N' },
       { label: 'Abrir recentes', icon: Clock, disabled: true },
     ],
     [
-      { label: 'Salvar', icon: Save, shortcut: 'Ctrl+S' },
+      { label: 'Salvar', icon: Save, shortcut: 'Ctrl+S', onClick: () => window.dispatchEvent(new Event('force-save')) },
       { label: 'Exportar como .txt', icon: FileDown, shortcut: 'Ctrl+Shift+S' },
     ],
     [
@@ -137,14 +142,14 @@ export default function MenuBar() {
 
   const EDIT_MENU: MenuSection[] = [
     [
-      { label: 'Desfazer', icon: Undo2, shortcut: 'Ctrl+Z' },
-      { label: 'Refazer', icon: Redo2, shortcut: 'Ctrl+Shift+Z' },
+      { label: 'Desfazer', icon: Undo2, shortcut: 'Ctrl+Z', onClick: () => document.execCommand('undo') },
+      { label: 'Refazer', icon: Redo2, shortcut: 'Ctrl+Shift+Z', onClick: () => document.execCommand('redo') },
     ],
     [
-      { label: 'Recortar', icon: Scissors, shortcut: 'Ctrl+X' },
-      { label: 'Copiar', icon: Copy, shortcut: 'Ctrl+C' },
-      { label: 'Colar', icon: Clipboard, shortcut: 'Ctrl+V' },
-      { label: 'Selecionar tudo', icon: CheckSquare, shortcut: 'Ctrl+A' },
+      { label: 'Recortar', icon: Scissors, shortcut: 'Ctrl+X', onClick: () => document.execCommand('cut') },
+      { label: 'Copiar', icon: Copy, shortcut: 'Ctrl+C', onClick: () => document.execCommand('copy') },
+      { label: 'Colar', icon: Clipboard, shortcut: 'Ctrl+V', onClick: () => document.execCommand('paste') },
+      { label: 'Selecionar tudo', icon: CheckSquare, shortcut: 'Ctrl+A', onClick: () => window.dispatchEvent(new Event('select-all')) },
     ],
     [
       { label: 'Buscar', icon: Search, shortcut: 'Ctrl+F', onClick: () => setSearchBarVisible(true) },

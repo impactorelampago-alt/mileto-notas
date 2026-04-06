@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { FixedCategory } from '../lib/types'
 
 interface UIState {
   searchQuery: string
@@ -9,6 +10,7 @@ interface UIState {
   searchBarVisible: boolean
   cursorLine: number
   cursorColumn: number
+  selectedCategory: FixedCategory | null
   setSearchQuery: (q: string) => void
   toggleWordWrap: () => void
   toggleLineNumbers: () => void
@@ -18,6 +20,7 @@ interface UIState {
   resetFontSize: () => void
   setSearchBarVisible: (v: boolean) => void
   setCursor: (line: number, column: number) => void
+  setSelectedCategory: (c: FixedCategory | null) => void
 }
 
 const FONT_MIN = 10
@@ -33,6 +36,7 @@ export const useUIStore = create<UIState>()((set) => ({
   searchBarVisible: false,
   cursorLine: 1,
   cursorColumn: 1,
+  selectedCategory: null,
   setSearchQuery: (q) => set({ searchQuery: q }),
   toggleWordWrap: () => set((s) => ({ wordWrap: !s.wordWrap })),
   toggleLineNumbers: () => set((s) => ({ showLineNumbers: !s.showLineNumbers })),
@@ -42,4 +46,5 @@ export const useUIStore = create<UIState>()((set) => ({
   resetFontSize: () => set({ fontSize: FONT_DEFAULT }),
   setSearchBarVisible: (v) => set({ searchBarVisible: v }),
   setCursor: (line, column) => set({ cursorLine: line, cursorColumn: column }),
+  setSelectedCategory: (c) => set({ selectedCategory: c }),
 }))
