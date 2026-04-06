@@ -1,0 +1,103 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+/* Variáveis de cor do tema */
+:root {
+  --sidebar-width: 280px;
+  --color-bg-primary: #09090b;    /* zinc-950 */
+  --color-bg-secondary: #18181b;  /* zinc-900 */
+  --color-bg-tertiary: #27272a;   /* zinc-800 */
+  --color-border: #3f3f46;        /* zinc-700 */
+  --color-border-subtle: #27272a; /* zinc-800 */
+  --color-text-primary: #f4f4f5;  /* zinc-100 */
+  --color-text-secondary: #a1a1aa; /* zinc-400 */
+  --color-text-muted: #71717a;    /* zinc-500 */
+  --color-accent: #10b981;        /* emerald-500 */
+  --color-accent-hover: #059669;  /* emerald-600 */
+}
+
+/* Reset base */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Scrollbar customizada */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* Área de drag da titlebar */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Área de texto do editor — permite seleção */
+.editor-content {
+  user-select: text;
+}
+
+/* Focus global nos inputs — borda emerald com glow sutil */
+input:focus {
+  border-color: #10b981 !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+/* Remove outline/shadow do focus no textarea do editor */
+.editor-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Scrollbar invisível (line numbers do editor) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}

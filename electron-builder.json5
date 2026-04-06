@@ -1,0 +1,38 @@
+{
+  appId: "com.mileto.ops-notas",
+  productName: "Ops Notas",
+  copyright: "Copyright © 2026 Mileto",
+  directories: {
+    output: "release/${version}",
+    buildResources: "build"
+  },
+  files: [
+    "dist/**/*",
+    "dist-electron/**/*"
+  ],
+  win: {
+    target: [
+      {
+        target: "nsis",
+        arch: ["x64"]
+      }
+    ],
+    icon: "build/icon.ico"
+  },
+  nsis: {
+    oneClick: false,
+    allowToChangeInstallationDirectory: true,
+    installerIcon: "build/icon.ico",
+    uninstallerIcon: "build/icon.ico",
+    installerHeaderIcon: "build/icon.ico",
+    createDesktopShortcut: true,
+    createStartMenuShortcut: true,
+    shortcutName: "Ops Notas"
+  },
+  publish: {
+    provider: "github",
+    owner: "impactorelampago-alt",
+    repo: "mileto-notas",
+    releaseType: "release"
+  }
+}
