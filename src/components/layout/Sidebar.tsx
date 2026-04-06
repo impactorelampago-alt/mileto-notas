@@ -1,18 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Search, Plus, FileText } from 'lucide-react'
-
-interface MockCategory {
-  id: string
-  name: string
-  color: string
-  count: number
-}
-
-const MOCK_CATEGORIES: MockCategory[] = [
-  { id: '1', name: 'Pessoal', color: '#22c55e', count: 4 },
-  { id: '2', name: 'Trabalho', color: '#3b82f6', count: 12 },
-  { id: '3', name: 'Ideias', color: '#a855f7', count: 7 },
-]
+import { useCategoriesStore } from '../../stores/categories-store'
+import { useNotesStore } from '../../stores/notes-store'
+import { useUIStore } from '../../stores/ui-store'
+import InputModal from '../ui/InputModal'
 
 const HDivider = () => (
   <div
@@ -25,8 +16,30 @@ const HDivider = () => (
 )
 
 export default function Sidebar() {
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
+  const { categories, selectedCategoryId, loadCategories, selectCategory, createCategory } =
+    useCategoriesStore()
+  const { notes, loadNotes } = useNotesStore()
+  const { searchQuery, setSearchQuery } = useUIStore()
+  const [showCategoryModal, setShowCategoryModal] = useState(false)
+
+  useEffect(() => {
+    loadCategories()
+    loadNotes()
+  }, [loadCategories, loadNotes])
+
+  const noteCountForCategory = (categoryId: string) =>
+    notes.filter((n) => n.category_id === categoryId).length
+
+  const filteredCategories = categories.filter((c) =>
+    c.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  )
+
+  const handleCreateCategory = () => setShowCategoryModal(true)
+
+  const handleCategoryConfirm = (name: string) => {
+    setShowCategoryModal(false)
+    void createCategory(name, '#10b981')
+  }
 
   return (
     <div
@@ -63,13 +76,11 @@ export default function Sidebar() {
 
       {/* Header de categorias */}
       <div className="flex items-center justify-between px-2 py-[6px]">
-        <span
-          className="text-[11px] font-medium text-zinc-500"
-          style={{ letterSpacing: '0.5px' }}
-        >
+        <span className="text-[11px] font-medium text-zinc-500" style={{ letterSpacing: '0.5px' }}>
           Categorias
         </span>
         <button
+          onClick={handleCreateCategory}
           className="flex h-5 w-5 items-center justify-center rounded-md text-zinc-500 transition-colors duration-150 hover:bg-zinc-700 hover:text-zinc-300"
           title="Nova categoria"
         >
@@ -81,34 +92,31 @@ export default function Sidebar() {
       <div className="flex flex-col px-2 pb-2">
         {/* Todas as notas */}
         <button
-          onClick={() => setSelectedCategory(null)}
+          onClick={() => selectCategory(null)}
           className="mb-0.5 flex w-full items-center gap-2 rounded px-2 text-[12px] transition-colors duration-150 hover:bg-zinc-800/60"
           style={{
             height: '30px',
-            borderLeft: selectedCategory === null ? '2px solid #10b981' : '2px solid transparent',
-            backgroundColor: selectedCategory === null ? '#27272a' : 'transparent',
-            color: selectedCategory === null ? '#f4f4f5' : '#a1a1aa',
+            borderLeft: selectedCategoryId === null ? '2px solid #10b981' : '2px solid transparent',
+            backgroundColor: selectedCategoryId === null ? '#27272a' : 'transparent',
+            color: selectedCategoryId === null ? '#f4f4f5' : '#a1a1aa',
           }}
         >
           <FileText size={13} className="shrink-0" />
           <span className="flex-1 text-left">Todas as notas</span>
-          <span className="text-[11px] text-zinc-600">23</span>
+          <span className="text-[11px] text-zinc-600">{notes.length}</span>
         </button>
 
-        {MOCK_CATEGORIES.map((category) => (
+        {filteredCategories.map((category) => (
           <button
             key={category.id}
-            onClick={() => setSelectedCategory(category.id)}
+            onClick={() => selectCategory(category.id)}
             className="mb-0.5 flex w-full items-center gap-2 rounded px-2 text-[12px] transition-colors duration-150 hover:bg-zinc-800/60"
             style={{
               height: '30px',
               borderLeft:
-                selectedCategory === category.id
-                  ? '2px solid #10b981'
-                  : '2px solid transparent',
-              backgroundColor:
-                selectedCategory === category.id ? '#27272a' : 'transparent',
-              color: selectedCategory === category.id ? '#f4f4f5' : '#a1a1aa',
+                selectedCategoryId === category.id ? '2px solid #10b981' : '2px solid transparent',
+              backgroundColor: selectedCategoryId === category.id ? '#27272a' : 'transparent',
+              color: selectedCategoryId === category.id ? '#f4f4f5' : '#a1a1aa',
             }}
           >
             <span
@@ -116,10 +124,20 @@ export default function Sidebar() {
               style={{ backgroundColor: category.color }}
             />
             <span className="flex-1 text-left">{category.name}</span>
-            <span className="text-[11px] text-zinc-600">{category.count}</span>
+            <span className="text-[11px] text-zinc-600">
+              {noteCountForCategory(category.id)}
+            </span>
           </button>
         ))}
       </div>
+
+      <InputModal
+        visible={showCategoryModal}
+        title="Nova categoria"
+        placeholder="Nome da categoria"
+        onConfirm={handleCategoryConfirm}
+        onCancel={() => setShowCategoryModal(false)}
+      />
     </div>
   )
 }

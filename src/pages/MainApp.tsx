@@ -1,5 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
 import { useAuthStore } from '../stores/auth-store'
+import { useCategoriesStore } from '../stores/categories-store'
+import { useNotesStore } from '../stores/notes-store'
+import { useUIStore } from '../stores/ui-store'
 import Titlebar from '../components/layout/Titlebar'
 import MenuBar from '../components/layout/MenuBar'
 import Sidebar from '../components/layout/Sidebar'
@@ -9,25 +12,17 @@ import Editor from '../components/editor/Editor'
 import SearchBar from '../components/editor/SearchBar'
 
 export default function MainApp() {
-  const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
-  const [searchBarVisible, setSearchBarVisible] = useState(false)
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const loadCategories = useCategoriesStore((s) => s.loadCategories)
+  const loadNotes = useNotesStore((s) => s.loadNotes)
+  const searchBarVisible = useUIStore((s) => s.searchBarVisible)
+  const setSearchBarVisible = useUIStore((s) => s.setSearchBarVisible)
 
   useEffect(() => {
     if (!isAuthenticated) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'f') {
-        e.preventDefault()
-        setSearchBarVisible((prev) => !prev)
-      }
-      if (e.key === 'Escape') {
-        setSearchBarVisible(false)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isAuthenticated])
+    void loadCategories()
+    void loadNotes()
+  }, [isAuthenticated, loadCategories, loadNotes])
 
   if (!isAuthenticated) return null
 

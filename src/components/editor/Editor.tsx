@@ -1,11 +1,42 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useNotesStore } from '../../stores/notes-store'
+import { useUIStore } from '../../stores/ui-store'
+
+function extractTitle(content: string): string {
+  const firstLine = content.split('\n')[0].trim()
+  if (!firstLine) return 'Nova nota'
+  return firstLine.slice(0, 50)
+}
 
 export default function Editor() {
-  const [content, setContent] = useState('')
+  const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
+  const updateNote = useNotesStore((s) => s.updateNote)
+  const { fontSize, showLineNumbers, wordWrap, setCursor } = useUIStore()
+
+  const [localContent, setLocalContent] = useState(activeNote?.content ?? '')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const lineNumbersRef = useRef<HTMLDivElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const activeNoteIdRef = useRef<string | null>(null)
+  activeNoteIdRef.current = activeNote?.id ?? null
 
-  const lineCount = content === '' ? 1 : content.split('\n').length
+  const lineHeight = fontSize * 1.6
+
+  // Sync local content when switching notes
+  useEffect(() => {
+    setLocalContent(activeNote?.content ?? '')
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+  }, [activeNote?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup debounce on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
 
   const handleScroll = useCallback(() => {
     if (lineNumbersRef.current && textareaRef.current) {
@@ -13,39 +44,80 @@ export default function Editor() {
     }
   }, [])
 
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const newContent = e.target.value
+      setLocalContent(newContent)
+
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => {
+        const id = activeNoteIdRef.current
+        if (!id) return
+        const title = extractTitle(newContent)
+        void updateNote(id, { content: newContent, title })
+      }, 500)
+    },
+    [updateNote],
+  )
+
+  const updateCursor = useCallback(() => {
+    const el = textareaRef.current
+    if (!el) return
+    const text = el.value.slice(0, el.selectionStart)
+    const lines = text.split('\n')
+    setCursor(lines.length, lines[lines.length - 1].length + 1)
+  }, [setCursor])
+
+  const lineCount = localContent === '' ? 1 : localContent.split('\n').length
+
+  if (!activeNote) {
+    return (
+      <div className="editor-content flex flex-1 items-center justify-center bg-zinc-950">
+        <p className="text-[13px] text-zinc-600">Selecione ou crie uma nota</p>
+      </div>
+    )
+  }
+
   return (
     <div className="editor-content flex flex-1 overflow-hidden">
-      {/* Números de linha */}
-      <div
-        ref={lineNumbersRef}
-        className="no-scrollbar w-[54px] shrink-0 select-none overflow-y-scroll bg-[#111113] pt-3 text-right text-[13px] text-zinc-400"
-        style={{
-          lineHeight: '22.4px',
-          fontFamily: "'JetBrains Mono', monospace",
-          boxShadow: '1px 0 0 0 rgba(16, 185, 129, 0.2)',
-        }}
-        aria-hidden="true"
-      >
-        <div className="pr-3 pl-2">
-          {Array.from({ length: lineCount }, (_, i) => (
-            <div key={i + 1}>{i + 1}</div>
-          ))}
+      {showLineNumbers && (
+        <div
+          ref={lineNumbersRef}
+          className="no-scrollbar w-[54px] shrink-0 select-none overflow-y-scroll bg-[#111113] pt-3 text-right text-zinc-400"
+          style={{
+            lineHeight: `${lineHeight}px`,
+            fontSize: `${fontSize - 1}px`,
+            fontFamily: "'JetBrains Mono', monospace",
+            boxShadow: '1px 0 0 0 rgba(16, 185, 129, 0.2)',
+          }}
+          aria-hidden="true"
+        >
+          <div className="pr-3 pl-2">
+            {Array.from({ length: lineCount }, (_, i) => (
+              <div key={i + 1}>{i + 1}</div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Textarea */}
       <textarea
         ref={textareaRef}
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
+        value={localContent}
+        onChange={handleChange}
         onScroll={handleScroll}
+        onKeyUp={updateCursor}
+        onClick={updateCursor}
+        onSelect={updateCursor}
         placeholder="Comece a escrever..."
         spellCheck={false}
-        className="editor-textarea flex-1 resize-none bg-zinc-950 pl-4 pr-6 pt-3 pb-4 text-[14px] text-zinc-100 outline-none placeholder:text-zinc-700"
+        wrap={wordWrap ? 'soft' : 'off'}
+        className="editor-textarea flex-1 resize-none bg-zinc-950 pl-4 pr-6 pt-3 pb-4 text-zinc-100 outline-none placeholder:text-zinc-700"
         style={{
           fontFamily: "'JetBrains Mono', monospace",
-          lineHeight: '22.4px',
+          fontSize: `${fontSize}px`,
+          lineHeight: `${lineHeight}px`,
           caretColor: '#f4f4f5',
+          overflowX: wordWrap ? 'hidden' : 'auto',
         }}
       />
     </div>
