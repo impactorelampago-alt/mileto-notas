@@ -17,6 +17,7 @@ interface UIState {
   showDeleteNoteModal: boolean
   showConnectModal: boolean
   connectModalTab: 'empresa' | 'tarefa'
+  showQuickSearch: boolean
   setSearchQuery: (q: string) => void
   toggleWordWrap: () => void
   toggleLineNumbers: () => void
@@ -34,6 +35,7 @@ interface UIState {
   setShowDeleteNoteModal: (v: boolean) => void
   setShowConnectModal: (v: boolean) => void
   setConnectModalTab: (tab: 'empresa' | 'tarefa') => void
+  setShowQuickSearch: (v: boolean) => void
 }
 
 const FONT_MIN = 10
@@ -57,6 +59,7 @@ export const useUIStore = create<UIState>()((set) => ({
   showDeleteNoteModal: false,
   showConnectModal: false,
   connectModalTab: 'empresa' as const,
+  showQuickSearch: false,
   setSearchQuery: (q) => set({ searchQuery: q }),
   toggleWordWrap: () => set((s) => ({ wordWrap: !s.wordWrap })),
   toggleLineNumbers: () => set((s) => ({ showLineNumbers: !s.showLineNumbers })),
@@ -74,4 +77,5 @@ export const useUIStore = create<UIState>()((set) => ({
   setShowDeleteNoteModal: (v) => set({ showDeleteNoteModal: v }),
   setShowConnectModal: (v) => set({ showConnectModal: v }),
   setConnectModalTab: (tab) => set({ connectModalTab: tab }),
+  setShowQuickSearch: (v) => set({ showQuickSearch: v }),
 }))

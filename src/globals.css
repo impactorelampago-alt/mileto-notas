@@ -17,15 +17,29 @@
 }
 
 /* Scrollbar das abas */
-.tabs-container::-webkit-scrollbar {
-  height: 3px;
+.tabs-scroll::-webkit-scrollbar {
+  height: 2px;
 }
-.tabs-container::-webkit-scrollbar-track {
+.tabs-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-.tabs-container::-webkit-scrollbar-thumb {
+.tabs-scroll::-webkit-scrollbar-thumb {
   background: #1a7a2e;
-  border-radius: 3px;
+  border-radius: 2px;
+}
+
+/* Borda gradiente verde na MenuBar */
+.menubar-border {
+  position: relative;
+}
+.menubar-border::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, #0d3d1a, #1a7a2e, #5dde2a, #1a7a2e, #0d3d1a);
 }
 
 /* Reset base */

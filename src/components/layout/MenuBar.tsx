@@ -39,8 +39,8 @@ export function MenuBar() {
 
   return (
     <div
-      className="relative flex items-center h-8 px-2 gap-3 select-none"
-      style={{ borderBottom: '1px solid #1a2a1a', backgroundColor: '#0a0a0a' }}
+      className="menubar-border relative flex items-center h-8 px-2 gap-3 select-none"
+      style={{ backgroundColor: '#0a0a0a' }}
     >
       {sections.map((section) => (
         <button

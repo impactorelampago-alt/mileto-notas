@@ -16,6 +16,7 @@ import CollaboratorsModal from '../components/ui/CollaboratorsModal'
 import SharedNotesModal from '../components/ui/SharedNotesModal'
 import DeleteNoteModal from '../components/ui/DeleteNoteModal'
 import ConnectModal from '../components/ui/ConnectModal'
+import { QuickSearch } from '../components/ui/QuickSearch'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -41,6 +42,7 @@ export default function MainApp() {
     showSharedNotesModal, setShowSharedNotesModal,
     showDeleteNoteModal, setShowDeleteNoteModal,
     showConnectModal, setShowConnectModal,
+    showQuickSearch, setShowQuickSearch,
   } = useUIStore()
   const updateCategory = useCategoriesStore((s) => s.updateCategory)
   const editingCategory = useCategoriesStore((s) =>
@@ -61,6 +63,17 @@ export default function MainApp() {
     subscribeToOpsChanges()
     return () => unsubscribeFromOpsChanges()
   }, [])
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'k') {
+        e.preventDefault()
+        setShowQuickSearch(true)
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [setShowQuickSearch])
 
   // Salvar todas as notas abertas antes de fechar o app
   useEffect(() => {
@@ -186,6 +199,10 @@ export default function MainApp() {
           noteId={activeTabId}
           onClose={() => setShowCollaboratorsModal(false)}
         />
+      )}
+
+      {showQuickSearch && (
+        <QuickSearch onClose={() => setShowQuickSearch(false)} />
       )}
     </div>
   )
