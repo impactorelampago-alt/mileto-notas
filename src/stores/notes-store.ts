@@ -48,11 +48,6 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     }
     const loaded = (data ?? []) as Note[]
     set({ notes: loaded, isLoading: false })
-
-    // Abrir a última nota editada se nenhuma aba está aberta
-    if (get().openTabs.length === 0 && loaded.length > 0) {
-      get().openTab(loaded[0].id)
-    }
   },
 
   createNote: async (categoryId: string | null = null) => {

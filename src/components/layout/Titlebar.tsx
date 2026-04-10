@@ -1,10 +1,8 @@
 import { useState, useEffect } from 'react'
-import { Minus, Maximize2, Minimize2, X, NotebookPen } from 'lucide-react'
-import { useNotesStore } from '../../stores/notes-store'
+import { Minus, Maximize2, Minimize2, X } from 'lucide-react'
 
 export default function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false)
-  const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId))
 
   useEffect(() => {
     const syncMaximized = async () => {
@@ -29,11 +27,9 @@ export default function Titlebar() {
     >
       {/* Esquerda: ícone + nome */}
       <div className="flex items-center gap-3">
-        <NotebookPen size={18} className="text-emerald-500" />
+        <img src="/icon.ico" alt="Mileto" className="w-5 h-5 object-contain" />
         <span className="text-[13px] font-medium" style={{ color: '#969696' }}>
-          {activeNote
-            ? `${activeNote.title.length > 40 ? activeNote.title.slice(0, 40) + '...' : activeNote.title} - Ops Notas`
-            : 'Ops Notas'}
+          Mileto - Ops Notas
         </span>
       </div>
 

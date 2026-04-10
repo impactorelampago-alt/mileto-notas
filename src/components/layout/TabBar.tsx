@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { X, Plus, Pin, Users } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useCategoriesStore } from '../../stores/categories-store'
@@ -7,9 +7,17 @@ export default function TabBar() {
   const { openTabs, activeTabId, notes, setActiveTab, closeTab, createNote, noteIdsWithCollaborators } = useNotesStore()
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
+  const tabsRef = useRef<HTMLDivElement>(null)
 
   const getNote = (noteId: string) => notes.find((n) => n.id === noteId)
   const getTitle = (noteId: string) => getNote(noteId)?.title ?? 'Sem título'
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (tabsRef.current) {
+      e.preventDefault()
+      tabsRef.current.scrollLeft += e.deltaY
+    }
+  }
 
   if (openTabs.length === 0) {
     return (
@@ -46,10 +54,14 @@ export default function TabBar() {
         borderRadius: '10px',
         margin: '4px 8px 0 8px',
         padding: '4px 8px 0 8px',
-        overflowX: 'auto',
       }}
     >
-      <div className="flex items-end gap-1">
+      <div
+        ref={tabsRef}
+        className="tabs-container flex flex-1 items-end gap-1"
+        style={{ overflowX: 'auto' }}
+        onWheel={handleWheel}
+      >
         {openTabs.map((noteId) => {
           const isActive = noteId === activeTabId
           const isHovered = noteId === hoveredTab
@@ -68,6 +80,7 @@ export default function TabBar() {
                 padding: '6px 16px',
                 minWidth: '120px',
                 maxWidth: '200px',
+                flexShrink: 0,
                 ...(isActive
                   ? {
                       backgroundColor: '#2d2d2d',

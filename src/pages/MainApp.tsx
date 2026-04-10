@@ -3,6 +3,7 @@ import { useAuthStore } from '../stores/auth-store'
 import { useNotesStore } from '../stores/notes-store'
 import { useCategoriesStore } from '../stores/categories-store'
 import { useUIStore } from '../stores/ui-store'
+import { useOpsStore } from '../stores/ops-store'
 import Titlebar from '../components/layout/Titlebar'
 import MenuBar from '../components/layout/MenuBar'
 import TabBar from '../components/layout/TabBar'
@@ -46,6 +47,8 @@ export default function MainApp() {
     s.categories.find((c) => c.id === editingCategoryId) ?? null
   )
 
+  const { subscribeToOpsChanges, unsubscribeFromOpsChanges } = useOpsStore()
+
   useEffect(() => {
     if (!isAuthenticated) return
     void loadNotes()
@@ -53,6 +56,11 @@ export default function MainApp() {
     void loadNotesWithCollaborators()
 
   }, [isAuthenticated, loadNotes, loadCategories, loadNotesWithCollaborators])
+
+  useEffect(() => {
+    subscribeToOpsChanges()
+    return () => unsubscribeFromOpsChanges()
+  }, [])
 
   // Salvar todas as notas abertas antes de fechar o app
   useEffect(() => {
