@@ -1,97 +1,133 @@
 import { useState } from 'react'
-import { X, Plus } from 'lucide-react'
+import { X, Plus, Pin, Users } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
-import { useUIStore } from '../../stores/ui-store'
-import { FIXED_CATEGORIES } from '../../lib/types'
+import { useCategoriesStore } from '../../stores/categories-store'
 
 export default function TabBar() {
-  const { openTabs, activeTabId, notes, setActiveTab, closeTab, createNote } = useNotesStore()
-  const selectedCategory = useUIStore((s) => s.selectedCategory)
-
-  const selectedCategoryLabel = selectedCategory
-    ? (FIXED_CATEGORIES.find((c) => c.id === selectedCategory)?.label ?? null)
-    : null
+  const { openTabs, activeTabId, notes, setActiveTab, closeTab, createNote, noteIdsWithCollaborators } = useNotesStore()
+  const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
 
-  const getTitle = (noteId: string) =>
-    notes.find((n) => n.id === noteId)?.title ?? 'Sem título'
+  const getNote = (noteId: string) => notes.find((n) => n.id === noteId)
+  const getTitle = (noteId: string) => getNote(noteId)?.title ?? 'Sem título'
 
   if (openTabs.length === 0) {
     return (
       <div
-        className="flex h-9 shrink-0 items-center justify-between bg-zinc-950 pl-1"
-        style={{ boxShadow: '0 1px 0 0 rgba(16, 185, 129, 0.4)' }}
+        className="flex shrink-0 items-center justify-between"
+        style={{
+          backgroundColor: '#252526',
+          borderRadius: '10px',
+          margin: '4px 8px 0 8px',
+          padding: '4px 8px',
+          height: '38px',
+        }}
       >
-        <span className="pl-3 text-[12px] text-zinc-600">Nenhuma nota aberta</span>
-        <div className="flex items-center">
-          {selectedCategoryLabel && (
-            <span className="text-[11px] text-zinc-600">em {selectedCategoryLabel}</span>
-          )}
-          <button
-            onClick={() => void createNote(selectedCategory)}
-            className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-600 transition-colors duration-150 hover:bg-zinc-900/50 hover:text-zinc-400"
-            title="Nova nota"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
+        <span className="text-[12px]" style={{ color: '#6d6d6d', paddingLeft: '8px' }}>Nenhuma nota aberta</span>
+        <button
+          onClick={() => void createNote()}
+          className="flex shrink-0 items-center justify-center transition-colors duration-150"
+          style={{ color: '#6d6d6d', borderRadius: '8px', padding: '6px 8px' }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#333333'; e.currentTarget.style.color = '#cccccc' }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#6d6d6d' }}
+          title="Nova nota"
+        >
+          <Plus size={16} />
+        </button>
       </div>
     )
   }
 
   return (
     <div
-      className="flex h-9 shrink-0 items-end bg-zinc-950 pl-1"
-      style={{ boxShadow: '0 1px 0 0 rgba(16, 185, 129, 0.4)' }}
+      className="flex shrink-0 items-end"
+      style={{
+        backgroundColor: '#252526',
+        borderRadius: '10px',
+        margin: '4px 8px 0 8px',
+        padding: '4px 8px 0 8px',
+        overflowX: 'auto',
+      }}
     >
-      {openTabs.map((noteId) => {
-        const isActive = noteId === activeTabId
-        const isHovered = noteId === hoveredTab
+      <div className="flex items-end gap-1">
+        {openTabs.map((noteId) => {
+          const isActive = noteId === activeTabId
+          const isHovered = noteId === hoveredTab
+          const note = getNote(noteId)
+          const category = note?.category_id ? getCategoryById(note.category_id) : undefined
 
-        return (
-          <button
-            key={noteId}
-            onClick={() => setActiveTab(noteId)}
-            onMouseEnter={() => setHoveredTab(noteId)}
-            onMouseLeave={() => setHoveredTab(null)}
-            className="group relative flex h-9 max-w-[180px] items-center gap-2 px-4 transition-colors duration-150"
-            style={
-              isActive
-                ? { backgroundColor: '#18181b', borderBottom: '2px solid #10b981', color: '#f4f4f5' }
-                : {
-                    backgroundColor: isHovered ? 'rgba(24, 24, 27, 0.5)' : 'transparent',
-                    color: isHovered ? '#d4d4d8' : '#71717a',
-                  }
-            }
-          >
-            <span className="max-w-[120px] truncate text-[13px]">{getTitle(noteId)}</span>
-            {(isActive || isHovered) && (
+          return (
+            <button
+              key={noteId}
+              onClick={() => setActiveTab(noteId)}
+              onMouseEnter={() => setHoveredTab(noteId)}
+              onMouseLeave={() => setHoveredTab(null)}
+              className="group relative flex items-center gap-2 transition-colors duration-150"
+              style={{
+                borderRadius: '8px 8px 0 0',
+                padding: '6px 16px',
+                minWidth: '120px',
+                maxWidth: '200px',
+                ...(isActive
+                  ? {
+                      backgroundColor: '#2d2d2d',
+                      color: '#cccccc',
+                      borderBottom: '2px solid #10b981',
+                    }
+                  : {
+                      backgroundColor: isHovered ? '#2a2a2a' : 'transparent',
+                      color: isHovered ? '#969696' : '#6d6d6d',
+                    }),
+              }}
+            >
+              {note?.is_pinned && <Pin size={12} style={{ color: '#10b981', flexShrink: 0 }} />}
+              {category && (
+                <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: category.color, flexShrink: 0 }} />
+              )}
               <span
-                onClick={(e) => {
-                  e.stopPropagation()
-                  closeTab(noteId)
+                className="text-[13px]"
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  flex: 1,
+                  minWidth: 0,
                 }}
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-zinc-500 transition-colors duration-150 hover:text-zinc-300"
               >
-                <X size={12} />
+                {getTitle(noteId)}
               </span>
-            )}
-          </button>
-        )
-      })}
-
-      <div className="ml-auto flex items-center">
-        {selectedCategoryLabel && (
-          <span className="text-[11px] text-zinc-600">em {selectedCategoryLabel}</span>
-        )}
-        <button
-          onClick={() => void createNote(selectedCategory)}
-          className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-600 transition-colors duration-150 hover:bg-zinc-900/50 hover:text-zinc-400"
-          title="Nova nota"
-        >
-          <Plus size={14} />
-        </button>
+              {noteIdsWithCollaborators.has(noteId) && (
+                <Users size={10} style={{ color: '#34d399', flexShrink: 0, marginLeft: 3 }} />
+              )}
+              {(isActive || isHovered) && (
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    closeTab(noteId)
+                  }}
+                  className="flex shrink-0 items-center justify-center rounded-sm transition-colors duration-150"
+                  style={{ color: '#6d6d6d', padding: '4px' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#333333'; e.currentTarget.style.color = '#cccccc' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#6d6d6d' }}
+                >
+                  <X size={14} />
+                </span>
+              )}
+            </button>
+          )
+        })}
       </div>
+
+      <button
+        onClick={() => void createNote()}
+        className="flex shrink-0 items-center justify-center transition-colors duration-150"
+        style={{ color: '#6d6d6d', borderRadius: '8px', padding: '6px 8px', marginLeft: '4px' }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#333333'; e.currentTarget.style.color = '#cccccc' }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#6d6d6d' }}
+        title="Nova nota"
+      >
+        <Plus size={16} />
+      </button>
     </div>
   )
 }

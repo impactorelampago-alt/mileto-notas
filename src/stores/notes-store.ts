@@ -1,7 +1,8 @@
 import { create } from 'zustand'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from './auth-store'
-import type { Note, FixedCategory } from '../lib/types'
+import type { Note } from '../lib/types'
 
 interface NotesState {
   notes: Note[]
@@ -9,8 +10,8 @@ interface NotesState {
   activeTabId: string | null
   isLoading: boolean
   loadNotes: () => Promise<void>
-  createNote: (categoryId?: FixedCategory | null) => Promise<Note | null>
-  updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'category_id' | 'is_pinned' | 'is_archived'>>) => Promise<void>
+  createNote: (categoryId?: string | null) => Promise<Note | null>
+  updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'category_id' | 'is_pinned' | 'is_archived' | 'client_id' | 'task_id'>>) => Promise<void>
   deleteNote: (id: string) => Promise<void>
   openTab: (noteId: string) => void
   closeTab: (noteId: string) => void
@@ -18,6 +19,12 @@ interface NotesState {
   setActiveTab: (noteId: string) => void
   getNotesByCategory: (categoryId: string | null) => Note[]
   getActiveNote: () => Note | null
+  fetchNoteById: (noteId: string) => Promise<Note | null>
+  noteIdsWithCollaborators: Set<string>
+  loadNotesWithCollaborators: () => Promise<void>
+  realtimeChannel: RealtimeChannel | null
+  subscribeToNote: (noteId: string) => void
+  unsubscribeFromNote: () => void
 }
 
 export const useNotesStore = create<NotesState>()((set, get) => ({
@@ -39,10 +46,16 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       set({ isLoading: false })
       return
     }
-    set({ notes: (data ?? []) as Note[], isLoading: false })
+    const loaded = (data ?? []) as Note[]
+    set({ notes: loaded, isLoading: false })
+
+    // Abrir a última nota editada se nenhuma aba está aberta
+    if (get().openTabs.length === 0 && loaded.length > 0) {
+      get().openTab(loaded[0].id)
+    }
   },
 
-  createNote: async (categoryId: FixedCategory | null = null) => {
+  createNote: async (categoryId: string | null = null) => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) return null
 
@@ -169,5 +182,85 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const { notes, activeTabId } = get()
     if (!activeTabId) return null
     return notes.find((n) => n.id === activeTabId) ?? null
+  },
+
+  fetchNoteById: async (noteId) => {
+    const existing = get().notes.find((n) => n.id === noteId)
+    if (existing) return existing
+
+    const { data, error } = await supabase
+      .from('notes')
+      .select('*')
+      .eq('id', noteId)
+      .single()
+
+    if (error || !data) return null
+
+    const note = data as Note
+    set((state) => ({ notes: [note, ...state.notes] }))
+    return note
+  },
+
+  noteIdsWithCollaborators: new Set<string>(),
+
+  loadNotesWithCollaborators: async () => {
+    const { data } = await supabase
+      .from('note_collaborators')
+      .select('note_id')
+    if (data) {
+      const ids = new Set(data.map((c) => c.note_id as string))
+      set({ noteIdsWithCollaborators: ids })
+    }
+  },
+
+  realtimeChannel: null,
+
+  subscribeToNote: (noteId) => {
+    const existing = get().realtimeChannel
+    if (existing) {
+      void supabase.removeChannel(existing)
+    }
+
+    const channel = supabase
+      .channel(`note:${noteId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'notes',
+          filter: `id=eq.${noteId}`,
+        },
+        (payload) => {
+          const updated = payload.new as Note
+
+          set((state) => {
+            const localNote = state.notes.find((n) => n.id === updated.id)
+            if (!localNote) return state
+
+            // Só atualizar se o conteúdo remoto é mais recente
+            if (updated.updated_at <= localNote.updated_at) return state
+
+            return {
+              notes: state.notes.map((n) =>
+                n.id === updated.id
+                  ? { ...n, title: updated.title, content: updated.content, updated_at: updated.updated_at }
+                  : n,
+              ),
+            }
+          })
+        },
+      )
+      .subscribe()
+
+    set({ realtimeChannel: channel })
+  },
+
+  unsubscribeFromNote: () => {
+    const channel = get().realtimeChannel
+    if (channel) {
+      void supabase.removeChannel(channel)
+      set({ realtimeChannel: null })
+    }
   },
 }))

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"const icons = ['FilePlus','AppWindow','Clock','Save','FileDown','Pin','Archive','X','XCircle','LogOut','Undo2','Redo2','Scissors','Copy','Clipboard','CheckSquare','Search','Replace','WrapText','ZoomIn','ZoomOut','RotateCcw','Hash','PanelBottom','Moon','FolderPlus','Tag','TagOff']; const lucide = require\\('lucide-react'\\); icons.forEach\\(i => console.log\\(i, lucide[i] ? 'OK' : 'MISSING'\\)\\)\")",
+      "Bash(node -e \"const lucide = require\\('lucide-react'\\); console.log\\('TagX:', lucide['TagX'] ? 'OK' : 'MISSING'\\); console.log\\('Tags:', lucide['Tags'] ? 'OK' : 'MISSING'\\); console.log\\('Unlink:', lucide['Unlink'] ? 'OK' : 'MISSING'\\); console.log\\('CircleOff:', lucide['CircleOff'] ? 'OK' : 'MISSING'\\)\")"
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { useCollaboratorsStore } from './collaborators-store'
 import type { Profile } from '../lib/types'
 
 interface AuthState {
@@ -78,6 +79,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   signOut: async () => {
     await supabase.auth.signOut()
     set({ user: null, profile: null, isAuthenticated: false })
+    useCollaboratorsStore.getState().resetStore()
   },
 
   loadProfile: async (userId) => {

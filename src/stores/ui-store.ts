@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import type { FixedCategory } from '../lib/types'
 
 interface UIState {
   searchQuery: string
@@ -10,7 +9,14 @@ interface UIState {
   searchBarVisible: boolean
   cursorLine: number
   cursorColumn: number
-  selectedCategory: FixedCategory | null
+  showCategoryModal: boolean
+  assignCategoryNoteId: string | null
+  editingCategoryId: string | null
+  showCollaboratorsModal: boolean
+  showSharedNotesModal: boolean
+  showDeleteNoteModal: boolean
+  showConnectModal: boolean
+  connectModalTab: 'empresa' | 'tarefa'
   setSearchQuery: (q: string) => void
   toggleWordWrap: () => void
   toggleLineNumbers: () => void
@@ -20,7 +26,14 @@ interface UIState {
   resetFontSize: () => void
   setSearchBarVisible: (v: boolean) => void
   setCursor: (line: number, column: number) => void
-  setSelectedCategory: (c: FixedCategory | null) => void
+  setShowCategoryModal: (v: boolean) => void
+  setAssignCategoryNoteId: (id: string | null) => void
+  setEditingCategoryId: (id: string | null) => void
+  setShowCollaboratorsModal: (v: boolean) => void
+  setShowSharedNotesModal: (v: boolean) => void
+  setShowDeleteNoteModal: (v: boolean) => void
+  setShowConnectModal: (v: boolean) => void
+  setConnectModalTab: (tab: 'empresa' | 'tarefa') => void
 }
 
 const FONT_MIN = 10
@@ -30,13 +43,20 @@ const FONT_DEFAULT = 14
 export const useUIStore = create<UIState>()((set) => ({
   searchQuery: '',
   wordWrap: true,
-  showLineNumbers: true,
+  showLineNumbers: false,
   showStatusBar: true,
   fontSize: FONT_DEFAULT,
   searchBarVisible: false,
   cursorLine: 1,
   cursorColumn: 1,
-  selectedCategory: null,
+  showCategoryModal: false,
+  assignCategoryNoteId: null,
+  editingCategoryId: null,
+  showCollaboratorsModal: false,
+  showSharedNotesModal: false,
+  showDeleteNoteModal: false,
+  showConnectModal: false,
+  connectModalTab: 'empresa' as const,
   setSearchQuery: (q) => set({ searchQuery: q }),
   toggleWordWrap: () => set((s) => ({ wordWrap: !s.wordWrap })),
   toggleLineNumbers: () => set((s) => ({ showLineNumbers: !s.showLineNumbers })),
@@ -46,5 +66,12 @@ export const useUIStore = create<UIState>()((set) => ({
   resetFontSize: () => set({ fontSize: FONT_DEFAULT }),
   setSearchBarVisible: (v) => set({ searchBarVisible: v }),
   setCursor: (line, column) => set({ cursorLine: line, cursorColumn: column }),
-  setSelectedCategory: (c) => set({ selectedCategory: c }),
+  setShowCategoryModal: (v) => set({ showCategoryModal: v }),
+  setAssignCategoryNoteId: (id) => set({ assignCategoryNoteId: id }),
+  setEditingCategoryId: (id) => set({ editingCategoryId: id }),
+  setShowCollaboratorsModal: (v) => set({ showCollaboratorsModal: v }),
+  setShowSharedNotesModal: (v) => set({ showSharedNotesModal: v }),
+  setShowDeleteNoteModal: (v) => set({ showDeleteNoteModal: v }),
+  setShowConnectModal: (v) => set({ showConnectModal: v }),
+  setConnectModalTab: (tab) => set({ connectModalTab: tab }),
 }))

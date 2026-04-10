@@ -14,18 +14,18 @@ export default function StatusBar() {
 
   return (
     <div
-      className="flex h-7 shrink-0 items-center justify-between bg-zinc-900 px-4"
-      style={{ boxShadow: '0 -1px 0 0 rgba(16, 185, 129, 0.2)' }}
+      className="flex h-7 shrink-0 items-center justify-between"
+      style={{ backgroundColor: '#252526', borderTop: '1px solid #3d3d3d', paddingLeft: '16px', paddingRight: '20px' }}
     >
-      <span className="text-xs text-zinc-500">
+      <span className="text-xs" style={{ color: '#6d6d6d', whiteSpace: 'nowrap' }}>
         Ln {cursorLine}, Col {cursorColumn}
       </span>
-      <span className="text-xs text-zinc-500">{charCount} caracteres</span>
-      <div className="flex items-center gap-1">
-        <span className="text-xs text-zinc-500">UTF-8</span>
-        <span className="text-xs text-zinc-700">·</span>
-        <span className="text-xs text-zinc-500">
-          Quebra automática: {wordWrap ? 'On' : 'Off'}
+      <span className="text-xs" style={{ color: '#6d6d6d', whiteSpace: 'nowrap' }}>{charCount} caracteres</span>
+      <div className="flex items-center gap-3" style={{ whiteSpace: 'nowrap' }}>
+        <span className="text-xs" style={{ color: '#6d6d6d' }}>UTF-8</span>
+        <span className="text-xs" style={{ color: '#4d4d4d' }}>|</span>
+        <span className="text-xs" style={{ color: '#6d6d6d' }}>
+          Quebra: {wordWrap ? 'On' : 'Off'}
         </span>
       </div>
     </div>

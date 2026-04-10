@@ -1,19 +1,19 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
-/* Variáveis de cor do tema */
+/* Variáveis de cor do tema — Windows 11 Notepad Dark */
 :root {
-  --sidebar-width: 280px;
-  --color-bg-primary: #09090b;    /* zinc-950 */
-  --color-bg-secondary: #18181b;  /* zinc-900 */
-  --color-bg-tertiary: #27272a;   /* zinc-800 */
-  --color-border: #3f3f46;        /* zinc-700 */
-  --color-border-subtle: #27272a; /* zinc-800 */
-  --color-text-primary: #f4f4f5;  /* zinc-100 */
-  --color-text-secondary: #a1a1aa; /* zinc-400 */
-  --color-text-muted: #71717a;    /* zinc-500 */
-  --color-accent: #10b981;        /* emerald-500 */
-  --color-accent-hover: #059669;  /* emerald-600 */
+  --color-bg-primary: #1e1e1e;
+  --color-bg-secondary: #2d2d2d;
+  --color-bg-tertiary: #333333;
+  --color-bg-tab-active: #2d2d2d;
+  --color-bg-tab-bar: #252526;
+  --color-border: #3d3d3d;
+  --color-text-primary: #cccccc;
+  --color-text-secondary: #969696;
+  --color-text-muted: #6d6d6d;
+  --color-accent: #10b981;
+  --color-accent-hover: #059669;
 }
 
 /* Reset base */
@@ -85,6 +85,11 @@ input:focus {
   border-color: #10b981 !important;
   box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
   transition: border-color 150ms, box-shadow 150ms;
+}
+
+/* Transição global para botões */
+button {
+  transition: background-color 150ms, color 150ms, transform 100ms;
 }
 
 /* Remove outline/shadow do focus no textarea do editor */

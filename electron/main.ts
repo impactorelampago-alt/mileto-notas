@@ -2,6 +2,9 @@ import { app, BrowserWindow, shell, ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import Store from 'electron-store'
+
+const store = new Store()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -9,6 +12,7 @@ const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 const RENDERER_DIST = path.join(__dirname, '../dist')
 
 let mainWindow: BrowserWindow | null = null
+let isForceClose = false
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -18,7 +22,8 @@ function createWindow(): void {
     minHeight: 600,
     frame: false,
     titleBarStyle: 'hidden',
-    backgroundColor: '#09090b', // zinc-950
+    icon: path.join(__dirname, '../build/icon.ico'),
+    backgroundColor: '#1e1e1e',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -35,6 +40,13 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  mainWindow.on('close', (event) => {
+    if (!isForceClose) {
+      event.preventDefault()
+      mainWindow?.webContents.send('app:before-close')
+    }
   })
 
   if (VITE_DEV_SERVER_URL) {
@@ -54,8 +66,26 @@ ipcMain.on('window:maximize', () => {
   }
 })
 ipcMain.on('window:close', () => mainWindow?.close())
+ipcMain.on('app:close-ready', () => {
+  isForceClose = true
+  mainWindow?.close()
+})
+ipcMain.on('window:new', () => {
+  createWindow()
+})
 
 ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false)
+
+// Session persistence via electron-store
+ipcMain.handle('session:get', (_event, key: string) => {
+  return store.get(key) ?? null
+})
+ipcMain.handle('session:set', (_event, key: string, value: string) => {
+  store.set(key, value)
+})
+ipcMain.handle('session:remove', (_event, key: string) => {
+  store.delete(key)
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

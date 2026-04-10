@@ -1,26 +1,11 @@
 export type NotePermission = 'VIEW' | 'EDIT'
 
-export type FixedCategory = 'empresas' | 'tarefas' | 'equipe'
-
-export interface FixedCategoryConfig {
-  id: FixedCategory
-  label: string
-  icon: string
-  color: string
-}
-
-export const FIXED_CATEGORIES: FixedCategoryConfig[] = [
-  { id: 'empresas', label: 'Empresas', icon: 'Building2', color: '#3b82f6' },
-  { id: 'tarefas', label: 'Tarefas', icon: 'CheckSquare', color: '#f59e0b' },
-  { id: 'equipe', label: 'Equipe', icon: 'Users', color: '#8b5cf6' },
-]
-
 export type UserRole = 'DONO' | 'GERENTE' | 'COORDENADOR' | 'FUNCIONARIO' | 'GUEST'
 
 export interface Profile {
   id: string
   email: string
-  full_name: string | null
+  name: string | null
   avatar_url: string | null
   role: UserRole
   created_at: string
