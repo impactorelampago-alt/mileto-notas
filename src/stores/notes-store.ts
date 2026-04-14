@@ -4,6 +4,93 @@ import { supabase } from '../lib/supabase'
 import { useAuthStore } from './auth-store'
 import type { Note } from '../lib/types'
 
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
+
+let _notesToken: string | null = null
+
+async function notesFetch<T>(path: string): Promise<T[]> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 5000)
+
+  if (!_notesToken) {
+    try {
+      const { data } = await supabase.auth.getSession()
+      if (data.session?.access_token) {
+        _notesToken = data.session.access_token
+      }
+    } catch {
+      // fallback para anon key
+    }
+  }
+
+  const token = _notesToken ?? SUPABASE_KEY
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${token}`,
+      },
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+
+    if (response.status === 401) {
+      _notesToken = null
+      throw new Error('Token expired')
+    }
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return await response.json() as T[]
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function notesPatch(table: string, id: string, body: Record<string, unknown>): Promise<boolean> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 5000)
+
+  if (!_notesToken) {
+    try {
+      const { data } = await supabase.auth.getSession()
+      if (data.session?.access_token) {
+        _notesToken = data.session.access_token
+      }
+    } catch {
+      // fallback para anon key
+    }
+  }
+
+  const token = _notesToken ?? SUPABASE_KEY
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+
+    if (response.status === 401) {
+      _notesToken = null
+      throw new Error('Token expired')
+    }
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return true
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 interface NotesState {
   notes: Note[]
   openTabs: string[]
@@ -35,19 +122,16 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
   loadNotes: async () => {
     set({ isLoading: true })
-    const { data, error } = await supabase
-      .from('notes')
-      .select('*')
-      .eq('is_archived', false)
-      .order('is_pinned', { ascending: false })
-      .order('updated_at', { ascending: false })
-    if (error) {
-      console.error('[notes] loadNotes:', error.message)
+    try {
+      const loaded = await notesFetch<Note>(
+        'notes?select=*&is_archived=eq.false&order=is_pinned.desc,updated_at.desc'
+      )
+      set({ notes: loaded, isLoading: false })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      console.error('[notes] loadNotes:', message)
       set({ isLoading: false })
-      return
     }
-    const loaded = (data ?? []) as Note[]
-    set({ notes: loaded, isLoading: false })
   },
 
   createNote: async (categoryId: string | null = null) => {
@@ -112,9 +196,11 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         n.id === id ? { ...n, ...updates, updated_at: new Date().toISOString() } : n,
       ),
     }))
-    const { error } = await supabase.from('notes').update(updates).eq('id', id)
-    if (error) {
-      console.error('[notes] updateNote:', error.message)
+    try {
+      await notesPatch('notes', id, updates)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      console.error('[notes] updateNote:', message)
       set({ notes: prev })
     }
   },
@@ -258,4 +344,5 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       set({ realtimeChannel: null })
     }
   },
+
 }))

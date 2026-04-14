@@ -16,7 +16,7 @@ import CollaboratorsModal from '../components/ui/CollaboratorsModal'
 import SharedNotesModal from '../components/ui/SharedNotesModal'
 import DeleteNoteModal from '../components/ui/DeleteNoteModal'
 import ConnectModal from '../components/ui/ConnectModal'
-import { QuickSearch } from '../components/ui/QuickSearch'
+import QuickSearch from '../components/ui/QuickSearch'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -49,7 +49,7 @@ export default function MainApp() {
     s.categories.find((c) => c.id === editingCategoryId) ?? null
   )
 
-  const { subscribeToOpsChanges, unsubscribeFromOpsChanges } = useOpsStore()
+  const { loadOpsData, subscribeToOpsChanges, unsubscribeFromOpsChanges, setupAutoReconciliation } = useOpsStore()
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -59,21 +59,19 @@ export default function MainApp() {
 
   }, [isAuthenticated, loadNotes, loadCategories, loadNotesWithCollaborators])
 
+  // Ops sync: load data + Realtime subscription + auto-reconciliation on focus
   useEffect(() => {
-    subscribeToOpsChanges()
-    return () => unsubscribeFromOpsChanges()
-  }, [])
+    if (!isAuthenticated) return
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'k') {
-        e.preventDefault()
-        setShowQuickSearch(true)
-      }
+    void loadOpsData()
+    subscribeToOpsChanges()
+    const cleanupReconciliation = setupAutoReconciliation()
+
+    return () => {
+      unsubscribeFromOpsChanges()
+      cleanupReconciliation()
     }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [setShowQuickSearch])
+  }, [isAuthenticated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Salvar todas as notas abertas antes de fechar o app
   useEffect(() => {
@@ -106,6 +104,17 @@ export default function MainApp() {
       unsubscribeFromNote()
     }
   }, [activeTabId, subscribeToNote, unsubscribeFromNote])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'k') {
+        e.preventDefault()
+        setShowQuickSearch(true)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [setShowQuickSearch])
 
   if (!isAuthenticated) return null
 
@@ -201,9 +210,7 @@ export default function MainApp() {
         />
       )}
 
-      {showQuickSearch && (
-        <QuickSearch onClose={() => setShowQuickSearch(false)} />
-      )}
+      {showQuickSearch && <QuickSearch />}
     </div>
   )
 }

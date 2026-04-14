@@ -2,23 +2,12 @@ import { useRef, useState } from 'react'
 import { X, Plus, Pin, Users } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useCategoriesStore } from '../../stores/categories-store'
-import { useOpsStore } from '../../stores/ops-store'
 
 export default function TabBar() {
   const { openTabs, activeTabId, notes, setActiveTab, closeTab, createNote, noteIdsWithCollaborators } = useNotesStore()
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
-  const { sections, tasks } = useOpsStore()
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
   const tabsRef = useRef<HTMLDivElement>(null)
-
-  const getNoteColor = (noteId: string): string | null => {
-    const note = notes.find(n => n.id === noteId)
-    if (!note?.task_id) return null
-    const task = tasks.find(t => t.id === note.task_id)
-    if (!task) return null
-    const section = sections.find(s => task.status.endsWith(s.key_suffix))
-    return section?.color ?? null
-  }
 
   const getNote = (noteId: string) => notes.find((n) => n.id === noteId)
   const getTitle = (noteId: string) => getNote(noteId)?.title ?? 'Sem título'
@@ -69,7 +58,7 @@ export default function TabBar() {
     >
       <div
         ref={tabsRef}
-        className="tabs-scroll flex flex-1 items-end gap-1"
+        className="tabs-container flex flex-1 items-end gap-1"
         style={{ overflowX: 'auto' }}
         onWheel={handleWheel}
       >
@@ -104,12 +93,6 @@ export default function TabBar() {
                     }),
               }}
             >
-              {(() => {
-                const color = getNoteColor(noteId)
-                return color ? (
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color, flexShrink: 0 }} />
-                ) : null
-              })()}
               {note?.is_pinned && <Pin size={12} style={{ color: '#10b981', flexShrink: 0 }} />}
               {category && (
                 <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: category.color, flexShrink: 0 }} />

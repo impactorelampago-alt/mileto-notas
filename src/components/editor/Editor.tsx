@@ -1,26 +1,13 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { NotebookPen } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
-import { useOpsStore } from '../../stores/ops-store'
 
-function extractTitle(content: string): string {
-  const firstLine = content.split('\n')[0].trim()
-  if (!firstLine) return 'Nova nota'
-  return firstLine.slice(0, 50)
-}
 
 export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
   const { fontSize, showLineNumbers, wordWrap, setCursor } = useUIStore()
-  const { tasks } = useOpsStore()
-
-  const taskTitle = useMemo(() => {
-    if (!activeNote?.task_id) return null
-    const task = tasks.find(t => t.id === activeNote.task_id)
-    return task?.title ?? null
-  }, [activeNote?.task_id, tasks])
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -53,8 +40,7 @@ export default function Editor() {
       const id = activeNoteIdRef.current
       const content = localContentRef.current
       if (id && content !== undefined) {
-        const title = extractTitle(content)
-        void useNotesStore.getState().updateNote(id, { content, title })
+        void useNotesStore.getState().updateNote(id, { content })
       }
     }
   }, [])
@@ -68,8 +54,7 @@ export default function Editor() {
       }
       const id = activeNoteIdRef.current
       if (!id) return
-      const title = extractTitle(localContent)
-      void updateNote(id, { content: localContent, title })
+      void updateNote(id, { content: localContent })
     }
 
     const handleSelectAll = () => {
@@ -100,8 +85,7 @@ export default function Editor() {
       debounceRef.current = setTimeout(() => {
         const id = activeNoteIdRef.current
         if (!id) return
-        const title = extractTitle(newContent)
-        void updateNote(id, { content: newContent, title })
+        void updateNote(id, { content: newContent })
       }, 500)
     },
     [updateNote],
@@ -126,27 +110,12 @@ export default function Editor() {
         <NotebookPen size={64} style={{ color: '#3d3d3d' }} />
         <span style={{ fontSize: '18px', fontWeight: 500, color: '#3d3d3d' }}>Ops Notas</span>
         <span style={{ fontSize: '13px', color: '#2a2a2a' }}>Ctrl+N para criar uma nota</span>
-        <span style={{ fontSize: '12px', color: '#3a3a3a', marginTop: '8px' }}>Selecione uma seção acima para ver as notas das tarefas</span>
       </div>
     )
   }
 
   return (
-    <div className="editor-content flex flex-1 flex-col overflow-hidden">
-      {taskTitle && (
-        <div
-          className="px-4 py-2 text-[11px] font-medium border-b select-none"
-          style={{
-            color: '#5dde2a',
-            borderColor: '#1a2a1a',
-            backgroundColor: '#0a0a0a',
-            letterSpacing: '0.05em',
-          }}
-        >
-          📋 {taskTitle}
-        </div>
-      )}
-      <div className="flex flex-1 overflow-hidden">
+    <div className="editor-content flex flex-1 overflow-hidden">
       {showLineNumbers && (
         <div
           ref={lineNumbersRef}
@@ -196,7 +165,6 @@ export default function Editor() {
           paddingBottom: '16px',
         }}
       />
-      </div>
     </div>
   )
 }
