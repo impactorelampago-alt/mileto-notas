@@ -27,7 +27,7 @@ export default function Titlebar() {
     >
       {/* Esquerda: ícone + nome */}
       <div className="flex items-center gap-3">
-        <img src="/icon.ico" alt="Mileto" className="w-5 h-5 object-contain" />
+        <img src="./icon.ico" alt="Mileto" className="w-5 h-5 object-contain" />
         <span className="text-[13px] font-medium" style={{ color: '#969696' }}>
           Mileto - Ops Notas
         </span>

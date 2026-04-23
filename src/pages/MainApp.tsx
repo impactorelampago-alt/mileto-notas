@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuthStore } from '../stores/auth-store'
 import { useNotesStore } from '../stores/notes-store'
 import { useCategoriesStore } from '../stores/categories-store'
@@ -51,7 +51,14 @@ export default function MainApp() {
     s.categories.find((c) => c.id === editingCategoryId) ?? null
   )
 
+  const sections = useOpsStore((s) => s.sections)
+  const setActiveSectionId = useOpsStore((s) => s.setActiveSectionId)
+  const setActiveTab = useNotesStore((s) => s.setActiveTab)
+  const hasLoadedOnce = useNotesStore((s) => s.hasLoadedOnce)
+  const createNote = useNotesStore((s) => s.createNote)
   const { loadOpsData, subscribeToOpsChanges, unsubscribeFromOpsChanges, setupAutoReconciliation } = useOpsStore()
+
+  const [hasInitialized, setHasInitialized] = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -74,6 +81,54 @@ export default function MainApp() {
       cleanupReconciliation()
     }
   }, [isAuthenticated]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persiste a última nota aberta no electron-store
+  useEffect(() => {
+    if (!activeTabId) return
+    void window.electronAPI?.sessionStorage?.set('lastNoteId', activeTabId)
+  }, [activeTabId])
+
+  // Inicialização: restaura última nota (usuário recorrente) ou cria nota (novo usuário)
+  useEffect(() => {
+    if (hasInitialized || !isAuthenticated || !hasLoadedOnce || sections.length === 0) return
+    setHasInitialized(true)
+
+    void (async () => {
+      const { openTabs } = useNotesStore.getState()
+      if (openTabs.length > 0) return // já tem abas abertas
+
+      const lastNoteId = await window.electronAPI?.sessionStorage?.get('lastNoteId')
+      const { notes: currentNotes } = useNotesStore.getState()
+
+      if (lastNoteId) {
+        const note = currentNotes.find((n) => n.id === lastNoteId)
+        if (note) {
+          openTab(note.id)
+          setActiveTab(note.id)
+          // Navegar para a categoria certa
+          if (note.task_id) {
+            const { tasks } = useOpsStore.getState()
+            const task = tasks.find((t) => t.id === note.task_id)
+            if (task) {
+              const section = sections.find((s) => task.status.endsWith(s.key_suffix))
+              if (section) setActiveSectionId(section.key_suffix)
+            }
+          }
+          return
+        }
+      }
+
+      // Novo usuário ou nota deletada — abre primeira seção e cria nota "Sem título"
+      const firstSection = sections[0]
+      if (!firstSection) return
+      setActiveSectionId(firstSection.key_suffix)
+      const newNote = await createNote({ title: 'Sem título', sectionSuffix: firstSection.key_suffix })
+      if (newNote) {
+        openTab(newNote.id)
+        setActiveTab(newNote.id)
+      }
+    })()
+  }, [hasInitialized, isAuthenticated, hasLoadedOnce, sections, openTab, setActiveTab, setActiveSectionId, createNote])
 
   // Salvar todas as notas abertas antes de fechar o app
   useEffect(() => {

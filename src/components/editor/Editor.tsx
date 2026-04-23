@@ -10,7 +10,6 @@ export default function Editor() {
   const { fontSize, showLineNumbers, wordWrap, setCursor } = useUIStore()
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
-  const [localTitle, setLocalTitle] = useState(() => activeNote?.title ?? '')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; text: string; start: number; end: number } | null>(null)
   const [annotationDraft, setAnnotationDraft] = useState<{ text: string; start: number; end: number } | null>(null)
   const [showAnnotationModal, setShowAnnotationModal] = useState(false)
@@ -19,7 +18,6 @@ export default function Editor() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const localContentRef = useRef<string>(activeNote?.content ?? '')
-  const localTitleRef = useRef<string>(activeNote?.title ?? '')
   const activeNoteIdRef = useRef<string | null>(null)
   activeNoteIdRef.current = activeNote?.id ?? null
 
@@ -27,11 +25,8 @@ export default function Editor() {
 
   useEffect(() => {
     const content = activeNote?.content ?? ''
-    const title = activeNote?.title ?? ''
     setLocalContent(content)
-    setLocalTitle(title)
     localContentRef.current = content
-    localTitleRef.current = title
     setContextMenu(null)
     if (debounceRef.current) {
       clearTimeout(debounceRef.current)
@@ -51,17 +46,14 @@ export default function Editor() {
       }
       const id = activeNoteIdRef.current
       const content = localContentRef.current
-      const title = localTitleRef.current
       if (id && content !== undefined) {
-        void useNotesStore.getState().updateNote(id, { content, title })
+        void useNotesStore.getState().updateNote(id, { content })
       }
     }
   }, [])
 
   useEffect(() => {
-    const handleClick = () => {
-      setContextMenu(null)
-    }
+    const handleClick = () => setContextMenu(null)
     window.addEventListener('click', handleClick)
     return () => window.removeEventListener('click', handleClick)
   }, [])
@@ -74,20 +66,16 @@ export default function Editor() {
       }
       const id = activeNoteIdRef.current
       if (!id) return
-      void updateNote(id, { content: localContent, title: localTitleRef.current })
+      void updateNote(id, { content: localContentRef.current })
     }
-
-    const handleSelectAll = () => {
-      textareaRef.current?.select()
-    }
-
+    const handleSelectAll = () => textareaRef.current?.select()
     window.addEventListener('force-save', handleForceSave)
     window.addEventListener('select-all', handleSelectAll)
     return () => {
       window.removeEventListener('force-save', handleForceSave)
       window.removeEventListener('select-all', handleSelectAll)
     }
-  }, [localContent, updateNote])
+  }, [updateNote])
 
   const handleScroll = useCallback(() => {
     if (lineNumbersRef.current && textareaRef.current) {
@@ -107,37 +95,23 @@ export default function Editor() {
         if (!id) return
         void updateNote(id, { content: newContent })
       }, 500)
+
+      // Auto-título: se a nota ainda é "Sem título", usa a primeira linha como título
+      const note = useNotesStore.getState().notes.find((n) => n.id === activeNoteIdRef.current)
+      if (note && (note.title === 'Sem título' || note.title === '')) {
+        if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
+        titleDebounceRef.current = setTimeout(() => {
+          const id = activeNoteIdRef.current
+          if (!id) return
+          const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
+          if (firstLine) {
+            void updateNote(id, { title: firstLine.slice(0, 60) })
+          }
+        }, 600)
+      }
     },
     [updateNote],
   )
-
-  const handleTitleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const newTitle = e.target.value
-    setLocalTitle(newTitle)
-    localTitleRef.current = newTitle
-
-    if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
-    titleDebounceRef.current = setTimeout(() => {
-      const id = activeNoteIdRef.current
-      if (!id) return
-      void updateNote(id, { title: newTitle.trim() || 'Sem título' })
-    }, 350)
-  }, [updateNote])
-
-  const handleTitleBlur = () => {
-    if (titleDebounceRef.current) {
-      clearTimeout(titleDebounceRef.current)
-      titleDebounceRef.current = null
-    }
-    const id = activeNoteIdRef.current
-    if (!id) return
-    const normalizedTitle = localTitle.trim() || 'Sem título'
-    if (normalizedTitle !== localTitle) {
-      setLocalTitle(normalizedTitle)
-      localTitleRef.current = normalizedTitle
-    }
-    void updateNote(id, { title: normalizedTitle })
-  }
 
   const updateCursor = useCallback(() => {
     const el = textareaRef.current
@@ -164,22 +138,6 @@ export default function Editor() {
 
   return (
     <div className="editor-content flex flex-1 flex-col overflow-hidden">
-      <input
-        value={localTitle}
-        onChange={handleTitleChange}
-        onBlur={handleTitleBlur}
-        placeholder="Título da nota"
-        className="shrink-0 bg-transparent outline-none"
-        style={{
-          color: '#f4f4f5',
-          fontSize: '15px',
-          fontWeight: 500,
-          padding: '10px 18px',
-          backgroundColor: '#252526',
-          borderBottom: '1px solid #2c2c2c',
-        }}
-      />
-
       <div className="flex flex-1 overflow-hidden">
         {showLineNumbers && (
           <div
@@ -229,7 +187,7 @@ export default function Editor() {
               end: selectionEnd,
             })
           }}
-          placeholder=""
+          placeholder="Comece a escrever..."
           spellCheck={false}
           wrap={wordWrap ? 'soft' : 'off'}
           className="editor-textarea flex-1 resize-none outline-none"

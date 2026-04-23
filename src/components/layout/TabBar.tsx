@@ -34,14 +34,28 @@ export default function TabBar() {
   const [isCreatingNote, setIsCreatingNote] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [contextMenuNoteId, setContextMenuNoteId] = useState<string | null>(null)
+  const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
 
   const noteInputRef = useRef<HTMLInputElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (isCreatingNote) {
-      setTimeout(() => noteInputRef.current?.focus(), 0)
-    }
+    if (isCreatingNote) setTimeout(() => noteInputRef.current?.focus(), 0)
   }, [isCreatingNote])
+
+  useEffect(() => {
+    if (renamingNoteId) setTimeout(() => renameInputRef.current?.focus(), 0)
+  }, [renamingNoteId])
+
+  useEffect(() => {
+    if (!contextMenuNoteId) return
+    const close = () => setContextMenuNoteId(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [contextMenuNoteId])
 
   const taskToSectionMap = useMemo(() => {
     const map = new Map<string, string>()
@@ -75,6 +89,19 @@ export default function TabBar() {
     () => sectionGroups.find((g) => g.key === activeSectionId) ?? null,
     [sectionGroups, activeSectionId],
   )
+
+  const handleStartRename = (noteId: string, currentTitle: string) => {
+    setRenamingNoteId(noteId)
+    setRenameValue(currentTitle === 'Sem título' ? '' : currentTitle)
+    setContextMenuNoteId(null)
+  }
+
+  const handleConfirmRename = async (noteId: string) => {
+    const title = renameValue.trim()
+    if (title) await updateNote(noteId, { title })
+    setRenamingNoteId(null)
+    setRenameValue('')
+  }
 
   const handleCreateNote = async () => {
     const title = newTitle.trim()
@@ -144,6 +171,12 @@ export default function TabBar() {
                 border: `1px solid ${isActive ? priorityColors.dot : isOpen ? '#3f3f46' : '#262626'}`,
                 color: '#d4d4d8',
               }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setContextMenuPos({ x: e.clientX, y: e.clientY })
+                setContextMenuNoteId(noteId)
+              }}
             >
               <span
                 onClick={(e) => {
@@ -184,9 +217,27 @@ export default function TabBar() {
 
               {note.is_pinned && <Pin size={10} style={{ color: '#10b981', flexShrink: 0 }} />}
 
-              <span className="truncate text-[12px]" style={{ color: isActive ? '#f4f4f5' : '#d4d4d8', maxWidth: 130 }}>
-                {note.title || 'Sem título'}
-              </span>
+              {renamingNoteId === noteId ? (
+                <input
+                  ref={renameInputRef}
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleConfirmRename(noteId)
+                    if (e.key === 'Escape') { setRenamingNoteId(null); setRenameValue('') }
+                    e.stopPropagation()
+                  }}
+                  onBlur={() => void handleConfirmRename(noteId)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-transparent outline-none text-[12px] min-w-0"
+                  style={{ color: '#f4f4f5', width: 110 }}
+                  placeholder="Nome da nota..."
+                />
+              ) : (
+                <span className="truncate text-[12px]" style={{ color: isActive ? '#f4f4f5' : '#d4d4d8', maxWidth: 130 }}>
+                  {note.title || 'Sem título'}
+                </span>
+              )}
 
               {noteIdsWithCollaborators.has(noteId) && (
                 <Users size={10} style={{ color: '#34d399', flexShrink: 0 }} />
@@ -269,6 +320,32 @@ export default function TabBar() {
           </button>
         )}
       </div>
+
+      {/* Menu contextual do card */}
+      {contextMenuNoteId && (
+        <div
+          className="fixed z-50 overflow-hidden rounded-lg border"
+          style={{
+            left: contextMenuPos.x,
+            top: contextMenuPos.y,
+            backgroundColor: '#1e1e1e',
+            borderColor: '#3d3d3d',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            minWidth: 140,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              const note = notes.find((n) => n.id === contextMenuNoteId)
+              if (note) handleStartRename(note.id, note.title)
+            }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-zinc-200 transition-colors hover:bg-zinc-800"
+          >
+            Renomear
+          </button>
+        </div>
+      )}
     </div>
   )
 }
