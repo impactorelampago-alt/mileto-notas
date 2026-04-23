@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import Store from 'electron-store'
 
-const store = new Store()
+const store = new Store({
+  projectName: 'ops-notas',
+})
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 

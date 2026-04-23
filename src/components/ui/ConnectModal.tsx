@@ -3,6 +3,8 @@ import { X, Search, Building2, CheckSquare } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
+import ClientAnnotationsModal from './ClientAnnotationsModal'
+import { NOTE_PRIORITY_COLORS, NOTE_PRIORITY_LABELS, normalizePriority } from '../../lib/note-priority'
 
 interface ConnectModalProps {
   noteId: string
@@ -24,20 +26,14 @@ interface OpsTask {
 }
 
 function PriorityBadge({ priority }: { priority: string | null }) {
-  if (!priority) return null
-  const colors: Record<string, { bg: string; text: string }> = {
-    URGENT: { bg: '#7f1d1d', text: '#fca5a5' },
-    HIGH: { bg: '#7c2d12', text: '#fdba74' },
-    MEDIUM: { bg: '#333333', text: '#969696' },
-    LOW: { bg: '#252526', text: '#6d6d6d' },
-  }
-  const c = colors[priority] ?? colors.MEDIUM
+  const normalized = normalizePriority(priority)
+  const c = NOTE_PRIORITY_COLORS[normalized]
   return (
     <span
       className="rounded text-[10px] font-medium"
-      style={{ padding: '1px 6px', backgroundColor: c.bg, color: c.text }}
+      style={{ padding: '1px 6px', backgroundColor: c.bg, color: c.text, border: `1px solid ${c.border}` }}
     >
-      {priority}
+      {NOTE_PRIORITY_LABELS[normalized]}
     </span>
   )
 }
@@ -51,6 +47,7 @@ export default function ConnectModal({ noteId, currentClientId, currentTaskId, o
   const [tasks, setTasks] = useState<OpsTask[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [selectedAnnotationsClient, setSelectedAnnotationsClient] = useState<{ id: string; name: string } | null>(null)
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -221,6 +218,13 @@ export default function ConnectModal({ noteId, currentClientId, currentTaskId, o
                     <span className="flex-1 text-[13px]" style={{ color: '#cccccc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {client.company}
                     </span>
+                    <button
+                      onClick={() => setSelectedAnnotationsClient({ id: client.id, name: client.company })}
+                      className="rounded text-[11px] font-medium transition-colors duration-150"
+                      style={{ padding: '2px 10px', backgroundColor: '#333333', color: '#a1a1aa' }}
+                    >
+                      Anotações
+                    </button>
                     {currentClientId === client.id ? (
                       <span className="text-[11px] font-medium" style={{ color: '#10b981' }}>Vinculado</span>
                     ) : (
@@ -324,6 +328,15 @@ export default function ConnectModal({ noteId, currentClientId, currentTaskId, o
           </button>
         </div>
       </div>
+
+      {selectedAnnotationsClient && (
+        <ClientAnnotationsModal
+          visible={selectedAnnotationsClient !== null}
+          clientId={selectedAnnotationsClient.id}
+          clientName={selectedAnnotationsClient.name}
+          onClose={() => setSelectedAnnotationsClient(null)}
+        />
+      )}
     </div>
   )
 }

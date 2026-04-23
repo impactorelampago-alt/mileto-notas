@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
-import renderer from 'vite-plugin-electron-renderer'
 import path from 'path'
 
 export default defineConfig({
@@ -17,6 +16,9 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             sourcemap: true,
+            rollupOptions: {
+              external: ['electron', 'electron-store', 'electron-updater'],
+            },
           },
         },
       },
@@ -29,11 +31,13 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             sourcemap: true,
+            rollupOptions: {
+              external: ['electron', 'electron-store', 'electron-updater'],
+            },
           },
         },
       },
     ]),
-    renderer(),
   ],
   resolve: {
     alias: {

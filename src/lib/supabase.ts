@@ -36,5 +36,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    lock: (_name: string, _acquireTimeout: number, fn: () => Promise<any>) => fn() as Promise<any>,
   },
 })

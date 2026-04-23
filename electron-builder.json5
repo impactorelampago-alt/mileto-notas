@@ -6,6 +6,7 @@
     output: "release/${version}",
     buildResources: "build"
   },
+  artifactName: "Ops-Notas-Setup.${ext}",
   files: [
     "dist/**/*",
     "dist-electron/**/*"
