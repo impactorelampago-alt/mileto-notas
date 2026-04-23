@@ -15,6 +15,7 @@ interface UIState {
   showCollaboratorsModal: boolean
   showSharedNotesModal: boolean
   showDeleteNoteModal: boolean
+  deleteSectionKeySuffix: string | null
   showConnectModal: boolean
   connectModalTab: 'empresa' | 'tarefa'
   showQuickSearch: boolean
@@ -33,6 +34,7 @@ interface UIState {
   setShowCollaboratorsModal: (v: boolean) => void
   setShowSharedNotesModal: (v: boolean) => void
   setShowDeleteNoteModal: (v: boolean) => void
+  setDeleteSectionKeySuffix: (suffix: string | null) => void
   setShowConnectModal: (v: boolean) => void
   setConnectModalTab: (tab: 'empresa' | 'tarefa') => void
   setShowQuickSearch: (v: boolean) => void
@@ -57,6 +59,7 @@ export const useUIStore = create<UIState>()((set) => ({
   showCollaboratorsModal: false,
   showSharedNotesModal: false,
   showDeleteNoteModal: false,
+  deleteSectionKeySuffix: null,
   showConnectModal: false,
   connectModalTab: 'empresa' as const,
   showQuickSearch: false,
@@ -75,6 +78,7 @@ export const useUIStore = create<UIState>()((set) => ({
   setShowCollaboratorsModal: (v) => set({ showCollaboratorsModal: v }),
   setShowSharedNotesModal: (v) => set({ showSharedNotesModal: v }),
   setShowDeleteNoteModal: (v) => set({ showDeleteNoteModal: v }),
+  setDeleteSectionKeySuffix: (suffix) => set({ deleteSectionKeySuffix: suffix }),
   setShowConnectModal: (v) => set({ showConnectModal: v }),
   setConnectModalTab: (tab) => set({ connectModalTab: tab }),
   setShowQuickSearch: (v) => set({ showQuickSearch: v }),

@@ -15,6 +15,7 @@ import AssignCategoryModal from '../components/ui/AssignCategoryModal'
 import CollaboratorsModal from '../components/ui/CollaboratorsModal'
 import SharedNotesModal from '../components/ui/SharedNotesModal'
 import DeleteNoteModal from '../components/ui/DeleteNoteModal'
+import DeleteSectionModal from '../components/ui/DeleteSectionModal'
 import ConnectModal from '../components/ui/ConnectModal'
 import QuickSearch from '../components/ui/QuickSearch'
 
@@ -41,6 +42,7 @@ export default function MainApp() {
     showCollaboratorsModal, setShowCollaboratorsModal,
     showSharedNotesModal, setShowSharedNotesModal,
     showDeleteNoteModal, setShowDeleteNoteModal,
+    deleteSectionKeySuffix, setDeleteSectionKeySuffix,
     showConnectModal, setShowConnectModal,
     showQuickSearch, setShowQuickSearch,
   } = useUIStore()
@@ -190,6 +192,13 @@ export default function MainApp() {
             closeTab(noteId)
             void deleteNote(noteId)
           }}
+        />
+      )}
+
+      {deleteSectionKeySuffix && (
+        <DeleteSectionModal
+          keySuffix={deleteSectionKeySuffix}
+          onClose={() => setDeleteSectionKeySuffix(null)}
         />
       )}
 

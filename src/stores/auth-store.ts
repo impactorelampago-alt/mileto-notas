@@ -77,9 +77,14 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   signOut: async () => {
-    await supabase.auth.signOut()
-    set({ user: null, profile: null, isAuthenticated: false })
-    useCollaboratorsStore.getState().resetStore()
+    try {
+      await supabase.auth.signOut()
+    } catch {
+      // ignora erros — força logout mesmo assim
+    } finally {
+      set({ user: null, profile: null, isAuthenticated: false })
+      useCollaboratorsStore.getState().resetStore()
+    }
   },
 
   loadProfile: async (userId) => {
