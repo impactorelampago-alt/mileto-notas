@@ -17,7 +17,7 @@ export default defineConfig({
             outDir: 'dist-electron',
             sourcemap: true,
             rollupOptions: {
-              external: ['electron', 'electron-store', 'electron-updater'],
+              external: ['electron', 'electron-store'],
             },
           },
         },
@@ -32,7 +32,7 @@ export default defineConfig({
             outDir: 'dist-electron',
             sourcemap: true,
             rollupOptions: {
-              external: ['electron', 'electron-store', 'electron-updater'],
+              external: ['electron', 'electron-store'],
             },
           },
         },
