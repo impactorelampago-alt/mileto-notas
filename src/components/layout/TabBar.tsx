@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { Check, Circle, Pin, Plus, Users, X } from 'lucide-react'
+import { Circle, Pin, Plus, Users, X } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useCategoriesStore } from '../../stores/categories-store'
 import { useOpsStore } from '../../stores/ops-store'
@@ -31,20 +31,13 @@ export default function TabBar() {
   const tasks = useOpsStore((s) => s.tasks)
 
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
-  const [isCreatingNote, setIsCreatingNote] = useState(false)
-  const [newTitle, setNewTitle] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [contextMenuNoteId, setContextMenuNoteId] = useState<string | null>(null)
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
 
-  const noteInputRef = useRef<HTMLInputElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (isCreatingNote) setTimeout(() => noteInputRef.current?.focus(), 0)
-  }, [isCreatingNote])
 
   useEffect(() => {
     if (renamingNoteId) setTimeout(() => renameInputRef.current?.focus(), 0)
@@ -104,24 +97,15 @@ export default function TabBar() {
   }
 
   const handleCreateNote = async () => {
-    const title = newTitle.trim()
-    if (!title || isSubmitting) return
-    const sectionForCreate = activeSectionId
+    if (isSubmitting) return
     setIsSubmitting(true)
-    setNewTitle('')
-    setIsCreatingNote(false)
     try {
-      await createNote({ title, sectionSuffix: sectionForCreate })
+      await createNote({ title: 'Sem título', sectionSuffix: activeSectionId })
     } catch (err) {
       console.error('[TabBar] createNote failed:', err)
     } finally {
       setIsSubmitting(false)
     }
-  }
-
-  const handleCancelCreateNote = () => {
-    setNewTitle('')
-    setIsCreatingNote(false)
   }
 
   if (!activeGroup) {
@@ -259,45 +243,9 @@ export default function TabBar() {
           )
         })}
 
-        {isCreatingNote ? (
-          <div
-            className={CARD_BASE_CLASSES}
-            style={{
-              ...CARD_WIDTH_STYLE,
-              backgroundColor: '#1f1f1f',
-              border: '1px solid #3f3f46',
-            }}
-          >
-            <input
-              ref={noteInputRef}
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void handleCreateNote()
-                if (e.key === 'Escape') handleCancelCreateNote()
-              }}
-              placeholder="Nome da nota..."
-              className="min-w-0 flex-1 bg-transparent text-[12px] text-zinc-200 outline-none placeholder:text-zinc-500"
-            />
-            <button
-              onClick={() => void handleCreateNote()}
-              disabled={isSubmitting || !newTitle.trim()}
-              className="flex shrink-0 items-center justify-center rounded p-1 text-emerald-400 transition-colors disabled:opacity-40"
-              title="Confirmar"
-            >
-              <Check size={14} />
-            </button>
-            <button
-              onClick={handleCancelCreateNote}
-              className="flex shrink-0 items-center justify-center rounded p-1 text-zinc-500 transition-colors hover:text-zinc-300"
-              title="Cancelar"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setIsCreatingNote(true)}
+        <button
+            onClick={() => void handleCreateNote()}
+            disabled={isSubmitting}
             className={`${CARD_BASE_CLASSES} justify-center`}
             style={{
               ...CARD_WIDTH_STYLE,
@@ -318,7 +266,6 @@ export default function TabBar() {
             <Plus size={12} />
             <span className="text-[11.5px]">Nova nota</span>
           </button>
-        )}
       </div>
 
       {/* Menu contextual do card */}

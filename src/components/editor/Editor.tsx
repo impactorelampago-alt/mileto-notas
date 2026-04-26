@@ -96,19 +96,14 @@ export default function Editor() {
         void updateNote(id, { content: newContent })
       }, 500)
 
-      // Auto-título: se a nota ainda é "Sem título", usa a primeira linha como título
-      const note = useNotesStore.getState().notes.find((n) => n.id === activeNoteIdRef.current)
-      if (note && (note.title === 'Sem título' || note.title === '')) {
-        if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
-        titleDebounceRef.current = setTimeout(() => {
-          const id = activeNoteIdRef.current
-          if (!id) return
-          const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
-          if (firstLine) {
-            void updateNote(id, { title: firstLine.slice(0, 60) })
-          }
-        }, 600)
-      }
+      // Auto-título: primeira linha não-vazia sempre vira título
+      if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
+      titleDebounceRef.current = setTimeout(() => {
+        const id = activeNoteIdRef.current
+        if (!id) return
+        const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
+        void updateNote(id, { title: firstLine.slice(0, 60) || 'Sem título' })
+      }, 600)
     },
     [updateNote],
   )
