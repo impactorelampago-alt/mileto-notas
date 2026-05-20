@@ -26,6 +26,7 @@ export default function TabBar() {
     updateNote,
   } = useNotesStore()
   const categories = useCategoriesStore((s) => s.categories)
+  const createCategory = useCategoriesStore((s) => s.createCategory)
   const sections = useOpsStore((s) => s.sections)
   const activeSectionId = useOpsStore((s) => s.activeSectionId)
   const tasks = useOpsStore((s) => s.tasks)
@@ -100,7 +101,11 @@ export default function TabBar() {
     if (isSubmitting) return
     setIsSubmitting(true)
     try {
-      await createNote({ title: 'Sem título', sectionSuffix: activeSectionId })
+      let rascunho = categories.find((c) => c.name.toLowerCase() === 'rascunho')
+      if (!rascunho) {
+        rascunho = await createCategory('rascunho', '#71717a') ?? undefined
+      }
+      await createNote({ title: 'Sem título', categoryId: rascunho?.id ?? null, sectionSuffix: activeSectionId })
     } catch (err) {
       console.error('[TabBar] createNote failed:', err)
     } finally {

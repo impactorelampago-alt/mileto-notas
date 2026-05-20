@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Check, ChevronDown, Circle, LogOut, Plus, X } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth-store'
 import { useOpsStore } from '../../stores/ops-store'
@@ -14,7 +15,6 @@ type SectionGroup = {
   label: string
   color: string
   noteIds: string[]
-  isLoose?: boolean
 }
 
 export function MenuBar() {
@@ -26,26 +26,12 @@ export function MenuBar() {
   const tasks = useOpsStore((s) => s.tasks)
   const notes = useNotesStore((s) => s.notes)
 
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState(false)
   const [isCreatingSection, setIsCreatingSection] = useState(false)
   const [newSectionLabel, setNewSectionLabel] = useState('')
-  const [newSectionColor, setNewSectionColor] = useState(SECTION_COLORS[0])
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const dropdownRef = useRef<HTMLDivElement>(null)
   const sectionInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (!isDropdownOpen) return
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setIsDropdownOpen(false)
-        setIsCreatingSection(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [isDropdownOpen])
 
   useEffect(() => {
     if (isCreatingSection) sectionInputRef.current?.focus()
@@ -84,11 +70,9 @@ export function MenuBar() {
     [sectionGroups, activeSectionId],
   )
 
-  const selectableSections = sectionGroups
-
   const handleSelectSection = (key: string) => {
     setActiveSectionId(key)
-    setIsDropdownOpen(false)
+    setIsOpen(false)
     setIsCreatingSection(false)
   }
 
@@ -96,37 +80,37 @@ export function MenuBar() {
     const label = newSectionLabel.trim()
     if (!label || isSubmitting) return
     setIsSubmitting(true)
-    const success = await createSection(label, newSectionColor)
+    const autoColor = SECTION_COLORS[sections.length % SECTION_COLORS.length]
+    const success = await createSection(label, autoColor)
     setIsSubmitting(false)
     if (success) {
       setNewSectionLabel('')
-      setNewSectionColor(SECTION_COLORS[0])
       setIsCreatingSection(false)
     }
   }
 
   const handleCancelCreateSection = () => {
     setNewSectionLabel('')
-    setNewSectionColor(SECTION_COLORS[0])
     setIsCreatingSection(false)
   }
 
   return (
     <div
-      className="flex h-9 items-center justify-between px-3 select-none"
-      style={{ borderBottom: '1px solid #1f1f1f', backgroundColor: '#0a0a0a' }}
+      className="select-none"
+      style={{ backgroundColor: '#0a0a0a', borderBottom: '1px solid #1f1f1f' }}
     >
-      <div ref={dropdownRef} className="relative">
+      {/* Header — sempre visível */}
+      <div className="flex h-9 items-center justify-between px-3">
         <button
-          onClick={() => setIsDropdownOpen((v) => !v)}
+          onClick={() => setIsOpen((v) => !v)}
           className="flex items-center gap-1.5 rounded-md px-2 py-0.5 transition-colors hover:bg-zinc-900"
           style={{ minWidth: 110 }}
         >
           {activeGroup ? (
             <>
-              <span style={{ width: 7, height: 7, borderRadius: '999px', backgroundColor: activeGroup.color }} />
+              <span style={{ width: 7, height: 7, borderRadius: '999px', backgroundColor: activeGroup.color, flexShrink: 0 }} />
               <span style={{ color: '#e4e4e7', fontSize: '11.5px', fontWeight: 500 }}>{activeGroup.label}</span>
-              <span style={{ color: '#71717a', fontSize: '10.5px', marginLeft: 'auto', marginRight: 2 }}>
+              <span style={{ color: '#71717a', fontSize: '10.5px', marginLeft: 6, marginRight: 2 }}>
                 {activeGroup.noteIds.length}
               </span>
             </>
@@ -134,67 +118,76 @@ export function MenuBar() {
             <>
               <Circle size={7} style={{ color: '#52525b' }} />
               <span style={{ color: '#a1a1aa', fontSize: '11.5px' }}>Escolher categoria</span>
-              <span style={{ marginLeft: 'auto' }} />
             </>
           )}
           <ChevronDown
             size={11}
             style={{
               color: '#71717a',
-              transform: isDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-              transition: 'transform 150ms ease',
+              marginLeft: 2,
+              transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+              transition: 'transform 180ms ease',
             }}
           />
         </button>
 
-        {isDropdownOpen && (
-          <div
-            className="absolute left-0 top-full mt-1 z-50 overflow-hidden"
-            style={{
-              minWidth: 260,
-              backgroundColor: '#18181b',
-              border: '1px solid #2c2c2c',
-              borderRadius: '10px',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
-            }}
+        <button
+          onClick={() => void signOut()}
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors hover:bg-zinc-900 hover:text-red-400"
+          style={{ color: '#6d6d6d' }}
+        >
+          <LogOut size={11} />
+          Sair
+        </button>
+      </div>
+
+      {/* Accordion — expande inline empurrando o conteúdo abaixo */}
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            key="accordion"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeInOut' }}
+            style={{ overflow: 'hidden', borderTop: '1px solid #1a1a1a' }}
           >
-            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-              {selectableSections.map((group) => {
+            {/* Grid de seções */}
+            <div
+              className="grid gap-1 p-2"
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
+            >
+              {sectionGroups.map((group) => {
                 const isActive = group.key === activeSectionId
                 return (
                   <button
                     key={group.key}
                     onClick={() => handleSelectSection(group.key)}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-zinc-800"
-                    style={{ backgroundColor: isActive ? '#232a26' : 'transparent' }}
+                    className="flex items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors hover:bg-zinc-800"
+                    style={{
+                      backgroundColor: isActive ? '#1a2920' : 'transparent',
+                      border: `1px solid ${isActive ? '#2d4a3a' : 'transparent'}`,
+                    }}
                   >
-                    <span style={{ width: 10, height: 10, borderRadius: '999px', backgroundColor: group.color }} />
-                    <span style={{ color: '#e4e4e7', fontSize: '12.5px', flex: 1 }}>{group.label}</span>
-                    <span style={{ color: '#71717a', fontSize: '11px' }}>{group.noteIds.length}</span>
+                    <span style={{ width: 8, height: 8, borderRadius: '999px', backgroundColor: group.color, flexShrink: 0 }} />
+                    <span
+                      className="flex-1 truncate"
+                      style={{ color: isActive ? '#d1fae5' : '#e4e4e7', fontSize: '12px' }}
+                    >
+                      {group.label}
+                    </span>
+                    <span style={{ color: '#52525b', fontSize: '11px', flexShrink: 0 }}>
+                      {group.noteIds.length}
+                    </span>
                   </button>
                 )
               })}
-
             </div>
 
-            <div style={{ borderTop: '1px solid #27272a', padding: 6 }}>
+            {/* Criar nova seção */}
+            <div style={{ borderTop: '1px solid #1a1a1a', padding: '6px 8px 8px' }}>
               {isCreatingSection ? (
-                <div className="flex flex-col gap-2 p-1">
-                  <div className="flex items-center gap-1">
-                    {SECTION_COLORS.map((color) => (
-                      <button
-                        key={color}
-                        onClick={() => setNewSectionColor(color)}
-                        className="h-3.5 w-3.5 rounded-full transition-transform"
-                        style={{
-                          backgroundColor: color,
-                          outline: color === newSectionColor ? '2px solid #e4e4e7' : 'none',
-                          outlineOffset: '1px',
-                          transform: color === newSectionColor ? 'scale(1.2)' : 'scale(1)',
-                        }}
-                      />
-                    ))}
-                  </div>
+                <div className="flex flex-col gap-2 px-1">
                   <div className="flex items-center gap-1.5">
                     <input
                       ref={sectionInputRef}
@@ -216,7 +209,7 @@ export function MenuBar() {
                     </button>
                     <button
                       onClick={handleCancelCreateSection}
-                      className="flex items-center justify-center rounded p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
+                      className="flex items-center justify-center rounded p-1 text-zinc-500 transition-colors hover:text-zinc-300"
                     >
                       <X size={14} />
                     </button>
@@ -225,25 +218,16 @@ export function MenuBar() {
               ) : (
                 <button
                   onClick={() => setIsCreatingSection(true)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-zinc-800"
+                  className="flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-zinc-800"
                 >
                   <Plus size={12} style={{ color: '#71717a' }} />
                   <span style={{ color: '#a1a1aa', fontSize: '12px' }}>Nova categoria</span>
                 </button>
               )}
             </div>
-          </div>
+          </motion.div>
         )}
-      </div>
-
-      <button
-        onClick={() => void signOut()}
-        className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors hover:bg-zinc-900 hover:text-red-400"
-        style={{ color: '#6d6d6d' }}
-      >
-        <LogOut size={11} />
-        Sair
-      </button>
+      </AnimatePresence>
     </div>
   )
 }

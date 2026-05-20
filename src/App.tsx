@@ -13,6 +13,12 @@ export default function App() {
     initialize()
   }, [initialize])
 
+  useEffect(() => {
+    window.electronAPI.onBeforeClose(() => {
+      window.electronAPI.closeApp()
+    })
+  }, [])
+
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-zinc-950">

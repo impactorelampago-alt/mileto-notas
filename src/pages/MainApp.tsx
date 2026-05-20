@@ -88,41 +88,57 @@ export default function MainApp() {
     void window.electronAPI?.sessionStorage?.set('lastNoteId', activeTabId)
   }, [activeTabId])
 
-  // Inicialização: restaura última nota (usuário recorrente) ou cria nota (novo usuário)
+  // Inicialização: restaura última nota, ou abre a mais recente, ou cria nova em "A Fazer"
   useEffect(() => {
-    if (hasInitialized || !isAuthenticated || !hasLoadedOnce || sections.length === 0) return
+    if (hasInitialized || !isAuthenticated || !hasLoadedOnce) return
+
+    const { notes: currentNotes } = useNotesStore.getState()
+    // Só bloquear em sections se não há notas (precisará criar uma)
+    if (currentNotes.length === 0 && sections.length === 0) return
+
     setHasInitialized(true)
 
     void (async () => {
       const { openTabs } = useNotesStore.getState()
-      if (openTabs.length > 0) return // já tem abas abertas
+      if (openTabs.length > 0) return
 
-      const lastNoteId = await window.electronAPI?.sessionStorage?.get('lastNoteId')
-      const { notes: currentNotes } = useNotesStore.getState()
+      const { notes: latestNotes } = useNotesStore.getState()
 
-      if (lastNoteId) {
-        const note = currentNotes.find((n) => n.id === lastNoteId)
-        if (note) {
-          openTab(note.id)
-          setActiveTab(note.id)
-          // Navegar para a categoria certa
-          if (note.task_id) {
-            const { tasks } = useOpsStore.getState()
-            const task = tasks.find((t) => t.id === note.task_id)
-            if (task) {
-              const section = sections.find((s) => task.status.endsWith(s.key_suffix))
-              if (section) setActiveSectionId(section.key_suffix)
-            }
+      const openNoteWithSection = (noteId: string, taskId: string | null) => {
+        openTab(noteId)
+        setActiveTab(noteId)
+        if (taskId && sections.length > 0) {
+          const { tasks } = useOpsStore.getState()
+          const task = tasks.find((t) => t.id === taskId)
+          if (task) {
+            const section = sections.find((s) => task.status.endsWith(s.key_suffix))
+            if (section) setActiveSectionId(section.key_suffix)
           }
+        }
+      }
+
+      // 1. Restaura última nota aberta da sessão anterior
+      const lastNoteId = await window.electronAPI?.sessionStorage?.get('lastNoteId')
+      if (lastNoteId) {
+        const note = latestNotes.find((n) => n.id === lastNoteId)
+        if (note) {
+          openNoteWithSection(note.id, note.task_id)
           return
         }
       }
 
-      // Novo usuário ou nota deletada — abre primeira seção e cria nota "Sem título"
-      const firstSection = sections[0]
-      if (!firstSection) return
-      setActiveSectionId(firstSection.key_suffix)
-      const newNote = await createNote({ title: 'Sem título', sectionSuffix: firstSection.key_suffix })
+      // 2. Abre a nota mais recente existente
+      if (latestNotes.length > 0) {
+        const mostRecent = latestNotes[0]
+        openNoteWithSection(mostRecent.id, mostRecent.task_id)
+        return
+      }
+
+      // 3. Nenhuma nota — cria nova na seção "A Fazer"
+      if (sections.length === 0) return
+      const aFazerSection = sections.find((s) => s.key_suffix === 'A_FAZER') ?? sections[0]
+      setActiveSectionId(aFazerSection.key_suffix)
+      const newNote = await createNote({ title: 'Sem título', sectionSuffix: aFazerSection.key_suffix })
       if (newNote) {
         openTab(newNote.id)
         setActiveTab(newNote.id)
