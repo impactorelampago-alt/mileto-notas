@@ -305,11 +305,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const task = taskMap.get(note.task_id)
       if (!task) return note
 
+      // Só puxa description/priority DO task quando ele foi editado DEPOIS da
+      // nota (ex.: alterado no Ops web). Se a nota está igual ou MAIS NOVA (edição
+      // local ainda não sincronizada), NÃO sobrescreve — senão apaga o que o
+      // usuário acabou de digitar a cada refresh (polling/foco/realtime). [grave]
+      const taskNewer = !!task.updated_at && task.updated_at > note.updated_at
+      if (!taskNewer) return note
+
       const taskDesc = task.description ?? ''
       const taskPriority = normalizePriority(task.priority)
       if (note.content !== taskDesc || note.priority !== taskPriority) {
         hasChanges = true
-        return { ...note, content: taskDesc, priority: taskPriority }
+        return { ...note, content: taskDesc, priority: taskPriority, updated_at: task.updated_at as string }
       }
       return note
     })

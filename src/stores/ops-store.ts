@@ -189,6 +189,7 @@ export interface OpsTask {
   status: string
   description: string | null
   priority: NotePriority | null
+  updated_at?: string | null
 }
 
 export const SYSTEM_SUFFIXES = new Set(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'])
@@ -305,7 +306,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       const sharedCatKeys = Object.keys(sharedCatMap)
 
       type StatusRow = { label: string; color: string; key: string; position: number }
-      type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null }
+      type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; updated_at: string | null }
 
       const [statusData, taskData] = await Promise.all([
         opsFetch<StatusRow>(
@@ -316,7 +317,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         // atribuídas a mim (pega tarefa minha numa coluna de outro). A RLS limita
         // ao que o usuário pode ver.
         opsFetch<TaskRow>(
-          `tasks?select=id,title,status,description,priority&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
+          `tasks?select=id,title,status,description,priority,updated_at&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
         ),
       ])
 
@@ -375,7 +376,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
           const keyList = sharedCatKeys.map((k) => `"${k}"`).join(',')
           try {
             const rows = await opsFetch<TaskRow>(
-              `tasks?select=id,title,status,description,priority&status=in.(${keyList})`,
+              `tasks?select=id,title,status,description,priority,updated_at&status=in.(${keyList})`,
             )
             extraTaskData.push(...rows)
           } catch (e) {
@@ -397,7 +398,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
             if (sharedTaskIds.length > 0) {
               const idList = sharedTaskIds.map((id) => `"${id}"`).join(',')
               const rows = await opsFetch<TaskRow>(
-                `tasks?select=id,title,status,description,priority&id=in.(${idList})`,
+                `tasks?select=id,title,status,description,priority,updated_at&id=in.(${idList})`,
               )
               extraTaskData.push(...rows)
             }
