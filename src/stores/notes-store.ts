@@ -248,8 +248,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const tasks = useOpsStore.getState().tasks
       const taskStatusById = new Map(tasks.map((t) => [t.id, t.status]))
 
+      const localById = new Map(get().notes.map((n) => [n.id, n]))
       const merged = Array.from(byId.values()).map((note) => {
         const base: Note = { ...note, priority: normalizePriority(note.priority) }
+        // Preserva edição LOCAL ainda não sincronizada (updated_at local mais
+        // novo) — senão um reload (foco/realtime/polling) sobrescreveria o que o
+        // usuário acabou de digitar e que ainda está no debounce de save.
+        const local = localById.get(note.id)
+        if (local && local.updated_at > note.updated_at) {
+          base.content = local.content
+          base.title = local.title
+          base.updated_at = local.updated_at
+        }
         if (!notImpersonating && note.creator_id !== userId) {
           // Sou destinatário desta nota — anexa flags de compartilhamento.
           let perm: NotePermission | undefined = sharedNotePerm[note.id]

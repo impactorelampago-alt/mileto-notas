@@ -36,7 +36,15 @@ export default function Editor() {
     // então sem isso o texto recém-digitado some ao voltar pra aba. (Bug grave.)
     const prevId = prevNoteIdRef.current
     if (prevId && prevId !== activeNote?.id) {
-      void useNotesStore.getState().updateNote(prevId, { content: localContentRef.current })
+      // Salva conteúdo E título (1ª linha) da nota anterior — o debounce de
+      // título (600ms) também é cancelado na troca, então sem isso o título
+      // não vira a primeira linha em troca rápida.
+      const c = localContentRef.current
+      const firstLine = c.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
+      void useNotesStore.getState().updateNote(prevId, {
+        content: c,
+        title: firstLine.slice(0, 60) || 'Sem título',
+      })
     }
     prevNoteIdRef.current = activeNote?.id ?? null
 
