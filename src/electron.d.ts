@@ -17,6 +17,13 @@ declare global {
       }
       onBeforeClose: (callback: () => void) => void
       closeApp: () => void
+      updates: {
+        install: () => void
+        onAvailable: (callback: (info: { version: string }) => void) => void
+        onProgress: (callback: (info: { percent: number }) => void) => void
+        onDownloaded: (callback: () => void) => void
+        onError: (callback: (info: { message: string }) => void) => void
+      }
     }
   }
 }

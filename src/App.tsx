@@ -4,6 +4,7 @@ import { useNotesStore } from './stores/notes-store'
 import { saveDraft, saveSession } from './lib/local-drafts'
 import Login from './pages/Login'
 import MainApp from './pages/MainApp'
+import UpdateBanner from './components/UpdateBanner'
 
 export default function App() {
   const isLoading = useAuthStore((state) => state.isLoading)
@@ -47,21 +48,28 @@ export default function App() {
     })
   }, [])
 
-  if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-zinc-950">
-        <div className="flex flex-col items-center gap-4">
-          <img
-            src="./logo.png"
-            alt="Mileto Notas"
-            className="h-20 w-20 animate-pulse object-contain"
-            style={{ filter: 'drop-shadow(0 4px 18px rgba(16,185,129,0.28))' }}
-          />
-          <span className="text-sm text-zinc-500">Carregando...</span>
-        </div>
+  const content = isLoading ? (
+    <div className="flex h-screen items-center justify-center bg-zinc-950">
+      <div className="flex flex-col items-center gap-4">
+        <img
+          src="./logo.png"
+          alt="Mileto Notas"
+          className="h-20 w-20 animate-pulse object-contain"
+          style={{ filter: 'drop-shadow(0 4px 18px rgba(16,185,129,0.28))' }}
+        />
+        <span className="text-sm text-zinc-500">Carregando...</span>
       </div>
-    )
-  }
+    </div>
+  ) : isAuthenticated ? (
+    <MainApp />
+  ) : (
+    <Login />
+  )
 
-  return isAuthenticated ? <MainApp /> : <Login />
+  return (
+    <>
+      {content}
+      <UpdateBanner />
+    </>
+  )
 }

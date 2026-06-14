@@ -16,6 +16,10 @@ const RENDERER_DIST = path.join(__dirname, '../dist')
 let mainWindow: BrowserWindow | null = null
 let isForceClose = false
 let closeFallbackTimer: ReturnType<typeof setTimeout> | null = null
+// Estado do auto-update (notificação in-app + instalar com 1 clique)
+let userRequestedInstall = false
+let pendingInstall = false
+let installing = false
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -81,6 +85,12 @@ ipcMain.on('app:close-ready', () => {
     clearTimeout(closeFallbackTimer)
     closeFallbackTimer = null
   }
+  // Se o fechamento foi disparado pra instalar uma atualização, instala
+  // (em vez de só fechar) — já com a sessão/notas salvas pelo renderer.
+  if (pendingInstall) {
+    doInstall()
+    return
+  }
   isForceClose = true
   mainWindow?.close()
 })
@@ -116,10 +126,61 @@ app.on('activate', () => {
 
 app.whenReady().then(createWindow)
 
-autoUpdater.checkForUpdatesAndNotify()
-autoUpdater.on('update-available', () => {
-  mainWindow?.webContents.send('update:available')
+// ── Auto-update: avisa o usuário DENTRO do app e instala com 1 clique ───────
+// Não baixa sozinho: mostra a notificação in-app; ao clicar "Instalar
+// atualização", baixa (com progresso) e instala/reinicia.
+autoUpdater.autoDownload = false
+autoUpdater.autoInstallOnAppQuit = true // rede de segurança
+
+function sendToRenderer(channel: string, payload?: unknown): void {
+  mainWindow?.webContents.send(channel, payload)
+}
+
+function doInstall(): void {
+  if (installing) return
+  installing = true
+  isForceClose = true // libera o guard de close (senão o quit fica preso)
+  if (closeFallbackTimer) {
+    clearTimeout(closeFallbackTimer)
+    closeFallbackTimer = null
+  }
+  autoUpdater.quitAndInstall(true, true) // silencioso + reabre após instalar
+}
+
+autoUpdater.on('update-available', (info) => {
+  sendToRenderer('update:available', { version: info?.version ?? '' })
+})
+autoUpdater.on('download-progress', (p) => {
+  sendToRenderer('update:progress', { percent: Math.round(p?.percent ?? 0) })
 })
 autoUpdater.on('update-downloaded', () => {
-  mainWindow?.webContents.send('update:downloaded')
+  sendToRenderer('update:downloaded')
+  if (userRequestedInstall) {
+    // Salva antes de instalar reutilizando o fluxo de fechar (App.tsx salva
+    // sessão/notas e chama closeApp → cai em pendingInstall → doInstall()).
+    pendingInstall = true
+    mainWindow?.webContents.send('app:before-close')
+    setTimeout(() => doInstall(), 7000) // fallback se o renderer não responder
+  }
+})
+autoUpdater.on('error', (err) => {
+  sendToRenderer('update:error', { message: err?.message ?? String(err) })
+})
+
+// Renderer clicou "Instalar atualização": baixa (dispara progresso) e, ao
+// terminar (update-downloaded), instala.
+ipcMain.on('update:install', () => {
+  userRequestedInstall = true
+  autoUpdater.downloadUpdate().catch((err) => {
+    sendToRenderer('update:error', { message: err instanceof Error ? err.message : String(err) })
+  })
+})
+
+// Verifica atualização no início (silencioso; só avisa se houver).
+app.whenReady().then(() => {
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(() => {
+      /* em dev / sem release: ignora */
+    })
+  }, 3000)
 })
