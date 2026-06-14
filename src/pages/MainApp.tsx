@@ -22,6 +22,7 @@ import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
 import { loadDrafts, removeDraft, loadSession, saveSession } from '../lib/local-drafts'
 import { DEFAULT_SECTION_SUFFIX } from '../lib/sections'
+import { isStatusSuffix } from '../lib/status-keys'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -187,7 +188,7 @@ export default function MainApp() {
         if (!taskId) return null
         const task = tasksNow.find((t) => t.id === taskId)
         if (!task) return null
-        return sectionsNow.find((s) => task.status.endsWith(s.key_suffix))?.key_suffix ?? null
+        return sectionsNow.find((s) => isStatusSuffix(task.status, s.key_suffix))?.key_suffix ?? null
       }
       const notesInSection = latestNotes.filter((n) => suffixOfNote(n.task_id) === targetSection)
 

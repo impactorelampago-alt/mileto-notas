@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase'
 import { useAuthStore } from './auth-store'
 import { useNotesStore } from './notes-store'
 import { useOpsStore } from './ops-store'
-import { isDoneStatus } from '../lib/sections'
+import { isDoneStatus } from '../lib/status-keys'
 import type { NotaNotification } from '../lib/types'
 
 /**

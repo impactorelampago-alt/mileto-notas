@@ -5,7 +5,8 @@ import { useNotesStore } from '../../stores/notes-store'
 import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useSharingStore } from '../../stores/sharing-store'
-import { sectionDisplayLabel, isDoneStatus } from '../../lib/sections'
+import { sectionDisplayLabel } from '../../lib/sections'
+import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
 
 const SECTION_COLORS = [
   '#3b82f6', '#10b981', '#ef4444', '#f59e0b',
@@ -78,9 +79,9 @@ export default function CategorySelect() {
           : task.status
       let section = sections.find((s) => effStatus === s.key)
       if (!section) {
-        const suffix = effStatus.split('_').pop() ?? ''
-        if (SYSTEM_SUFFIXES.has(suffix)) {
-          section = sections.find((s) => s.key_suffix === suffix)
+        const base = getStatusBase(effStatus)
+        if (SYSTEM_SUFFIXES.has(base)) {
+          section = sections.find((s) => s.key_suffix === base)
         }
       }
       if (section) taskToSuffix.set(task.id, section.key_suffix)

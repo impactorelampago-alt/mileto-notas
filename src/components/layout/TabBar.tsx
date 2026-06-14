@@ -7,7 +7,7 @@ import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useSharingStore } from '../../stores/sharing-store'
 import { NOTE_PRIORITY_COLORS, NOTE_PRIORITY_LABELS, normalizePriority } from '../../lib/note-priority'
-import { isDoneStatus } from '../../lib/sections'
+import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
 import type { NotePriority } from '../../lib/types'
 
 type SectionGroup = {
@@ -89,9 +89,9 @@ export default function TabBar() {
       //    deduplicada por rótulo e pode ser a key de outro usuário, mas a task
       //    carrega o MEU `USR_<id>_SUFIXO`. Casa pelo sufixo, só entre sufixos de sistema.
       if (!section) {
-        const suffix = effStatus.split('_').pop() ?? ''
-        if (SYSTEM_SUFFIXES.has(suffix)) {
-          section = sections.find((item) => item.key_suffix === suffix)
+        const base = getStatusBase(effStatus)
+        if (SYSTEM_SUFFIXES.has(base)) {
+          section = sections.find((item) => item.key_suffix === base)
         }
       }
       if (section) map.set(task.id, section.key_suffix)

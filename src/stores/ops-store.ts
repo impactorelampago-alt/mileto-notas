@@ -6,7 +6,8 @@ import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
 import type { NotePriority } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
-import { ownerPrefixOfKey, suffixOfKey } from '../lib/sections'
+import { ownerPrefixOfKey } from '../lib/sections'
+import { getStatusBase, buildStatusKey } from '../lib/status-keys'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
@@ -326,7 +327,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
       // statusData já vem ordenado por position (query)
       for (const row of statusData) {
-        const suffix = suffixOfKey(row.key)
+        const suffix = getStatusBase(row.key)
         const isSystem = SYSTEM_SUFFIXES.has(suffix)
 
         // Seções pré-definidas: aparecem para todos (deduplica por label)
@@ -352,7 +353,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         if (ownKeys.has(sharedKey)) continue
         const row = statusData.find((r) => r.key === sharedKey)
         if (!row) continue
-        const suffix = suffixOfKey(row.key)
+        const suffix = getStatusBase(row.key)
         const prefix = ownerPrefixOfKey(row.key)
         const ownerCleanedId = prefix ? prefix.slice(4, prefix.length - 1) : ''
         newSections.push({
@@ -493,9 +494,10 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const userId = useAuthStore.getState().user?.id
     if (!userId) return false
 
-    const cleanedId = userId.replace(/-/g, '')
     const suffix = normalizeLabel(label)
-    const key = `USR_${cleanedId}_${suffix}`.substring(0, 60)
+    // Key COMPLETA, sem truncar (o truncamento em 60 divergia do Ops para labels
+    // longos). buildStatusKey é o helper canônico compartilhado.
+    const key = buildStatusKey(userId, suffix)
 
     // Verificar duplicata por key_suffix nas seções atuais
     const existing = get().sections.find((s) => s.key_suffix === suffix)
@@ -533,8 +535,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     if (!userId) return false
     if (SYSTEM_SUFFIXES.has(keySuffix)) return false
 
-    const cleanedId = userId.replace(/-/g, '')
-    const fullKey = `USR_${cleanedId}_${keySuffix}`
+    const fullKey = buildStatusKey(userId, keySuffix)
 
     const prev = get().sections
     set((s) => ({
@@ -574,8 +575,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       return { success: false, error: 'Não é possível excluir seções pré-definidas' }
     }
 
-    const cleanedId = userId.replace(/-/g, '')
-    const fullKey = `USR_${cleanedId}_${keySuffix}`
+    const fullKey = buildStatusKey(userId, keySuffix)
 
     // 1. Tasks do usuário nessa seção
     const tasksInSection = get().tasks.filter(
@@ -640,17 +640,13 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const userId = useAuthStore.getState().user?.id
     if (!userId) return null
 
-    const cleanedId = userId.replace(/-/g, '')
-    // Se a seção alvo é compartilhada (de outro dono), usar a KEY COMPLETA dela —
-    // nunca reconstruir com o meu user.id, senão a task cairia numa categoria minha.
+    // SEMPRE a key COMPLETA da seção (própria OU compartilhada) — nunca reconstruir
+    // pelo sufixo truncado. Se a seção não for achada, buildStatusKey monta a key
+    // canônica do usuário (idêntica à do Ops).
     const targetSection = sectionSuffix
       ? get().sections.find((s) => s.key_suffix === sectionSuffix)
       : undefined
-    // SEMPRE a key COMPLETA da seção (própria OU compartilhada) — nunca reconstruir
-    // pelo sufixo, que trunca categorias multi-palavra (ex.: "CRM Mileto IA" → "IA")
-    // e faz a tarefa nascer com status errado (some da categoria).
-    const status = targetSection?.key
-      ?? (sectionSuffix ? `USR_${cleanedId}_${sectionSuffix}` : `USR_${cleanedId}_TODO`)
+    const status = targetSection?.key ?? buildStatusKey(userId, sectionSuffix ?? 'TODO')
 
     const result = await opsPost<{ id: string }>('tasks', {
       title,

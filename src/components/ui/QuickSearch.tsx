@@ -4,6 +4,7 @@ import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore } from '../../stores/ops-store'
 import { useUIStore } from '../../stores/ui-store'
 import { sectionDisplayLabel } from '../../lib/sections'
+import { isStatusSuffix } from '../../lib/status-keys'
 
 export default function QuickSearch() {
   const [query, setQuery] = useState('')
@@ -35,7 +36,7 @@ export default function QuickSearch() {
     if (!taskId) return null
     const task = tasks.find((t) => t.id === taskId)
     if (!task) return null
-    const section = sections.find((s) => task.status.endsWith(s.key_suffix))
+    const section = sections.find((s) => isStatusSuffix(task.status, s.key_suffix))
     return section ?? null
   }
 
