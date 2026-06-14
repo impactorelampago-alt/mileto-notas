@@ -6,6 +6,9 @@ dist-electron
 .env.*.local
 release
 
+# Build caches
+*.tsbuildinfo
+
 # Logs
 *.log
 npm-debug.log*
