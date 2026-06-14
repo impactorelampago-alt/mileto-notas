@@ -311,8 +311,12 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         opsFetch<StatusRow>(
           'custom_statuses?select=label,color,key,position&order=position.asc'
         ),
+        // Tarefas das MINHAS colunas (status com meu prefixo USR_<id>_, qualquer
+        // assignee — pra o dono ver o board inteiro, não só o que é dele) OU
+        // atribuídas a mim (pega tarefa minha numa coluna de outro). A RLS limita
+        // ao que o usuário pode ver.
         opsFetch<TaskRow>(
-          `tasks?select=id,title,status,description,priority&assignee_id=eq.${currentUserId}&order=title.asc`
+          `tasks?select=id,title,status,description,priority&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
         ),
       ])
 
