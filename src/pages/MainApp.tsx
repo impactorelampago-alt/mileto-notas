@@ -4,6 +4,7 @@ import { useNotesStore } from '../stores/notes-store'
 import { useCategoriesStore } from '../stores/categories-store'
 import { useUIStore } from '../stores/ui-store'
 import { useOpsStore } from '../stores/ops-store'
+import { isStatusSuffix } from '../lib/status-keys'
 import Titlebar from '../components/layout/Titlebar'
 import MenuBar from '../components/layout/MenuBar'
 import TabBar from '../components/layout/TabBar'
@@ -111,7 +112,7 @@ export default function MainApp() {
           const { tasks } = useOpsStore.getState()
           const task = tasks.find((t) => t.id === taskId)
           if (task) {
-            const section = sections.find((s) => task.status.endsWith(s.key_suffix))
+            const section = sections.find((s) => isStatusSuffix(task.status, s.key_suffix))
             if (section) setActiveSectionId(section.key_suffix)
           }
         }

@@ -5,6 +5,7 @@ import { useNotesStore } from './notes-store'
 import { useAuthStore } from './auth-store'
 import type { NotePriority } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
+import { getStatusBase, buildStatusKey } from '../lib/status-keys'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
@@ -295,8 +296,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
       // statusData já vem ordenado por position (query)
       for (const row of statusData) {
-        const parts = row.key.split('_')
-        const suffix = parts[parts.length - 1]
+        const suffix = getStatusBase(row.key)
         const isSystem = SYSTEM_SUFFIXES.has(suffix)
 
         // Seções pré-definidas: aparecem para todos (deduplica por label)
@@ -394,9 +394,8 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const userId = useAuthStore.getState().user?.id
     if (!userId) return false
 
-    const cleanedId = userId.replace(/-/g, '')
     const suffix = normalizeLabel(label)
-    const key = `USR_${cleanedId}_${suffix}`.substring(0, 60)
+    const key = buildStatusKey(userId, suffix).substring(0, 60)
 
     // Verificar duplicata por key_suffix nas seções atuais
     const existing = get().sections.find((s) => s.key_suffix === suffix)
@@ -437,8 +436,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       return { success: false, error: 'Não é possível excluir seções pré-definidas' }
     }
 
-    const cleanedId = userId.replace(/-/g, '')
-    const fullKey = `USR_${cleanedId}_${keySuffix}`
+    const fullKey = buildStatusKey(userId, keySuffix)
 
     // 1. Tasks do usuário nessa seção
     const tasksInSection = get().tasks.filter(
@@ -503,10 +501,9 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const userId = useAuthStore.getState().user?.id
     if (!userId) return null
 
-    const cleanedId = userId.replace(/-/g, '')
     const status = sectionSuffix
-      ? `USR_${cleanedId}_${sectionSuffix}`
-      : `USR_${cleanedId}_TODO`
+      ? buildStatusKey(userId, sectionSuffix)
+      : buildStatusKey(userId, 'TODO')
 
     const result = await opsPost<{ id: string }>('tasks', {
       title,

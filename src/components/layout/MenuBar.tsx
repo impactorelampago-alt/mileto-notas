@@ -4,6 +4,7 @@ import { Check, ChevronDown, Circle, LogOut, Plus, X } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth-store'
 import { useOpsStore } from '../../stores/ops-store'
 import { useNotesStore } from '../../stores/notes-store'
+import { isStatusSuffix } from '../../lib/status-keys'
 
 const SECTION_COLORS = [
   '#3b82f6', '#10b981', '#ef4444', '#f59e0b',
@@ -40,7 +41,7 @@ export function MenuBar() {
   const taskToSectionMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const task of tasks) {
-      const section = sections.find((item) => task.status.endsWith(item.key_suffix))
+      const section = sections.find((item) => isStatusSuffix(task.status, item.key_suffix))
       if (section) map.set(task.id, section.key_suffix)
     }
     return map

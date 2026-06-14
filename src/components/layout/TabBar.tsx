@@ -4,6 +4,7 @@ import { useNotesStore } from '../../stores/notes-store'
 import { useCategoriesStore } from '../../stores/categories-store'
 import { useOpsStore } from '../../stores/ops-store'
 import { NOTE_PRIORITY_COLORS, normalizePriority } from '../../lib/note-priority'
+import { isStatusSuffix } from '../../lib/status-keys'
 
 type SectionGroup = {
   key: string
@@ -54,7 +55,7 @@ export default function TabBar() {
   const taskToSectionMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const task of tasks) {
-      const section = sections.find((item) => task.status.endsWith(item.key_suffix))
+      const section = sections.find((item) => isStatusSuffix(task.status, item.key_suffix))
       if (section) map.set(task.id, section.key_suffix)
     }
     return map

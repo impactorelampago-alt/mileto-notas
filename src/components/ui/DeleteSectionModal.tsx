@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, X } from 'lucide-react'
 import { useOpsStore } from '../../stores/ops-store'
 import { useNotesStore } from '../../stores/notes-store'
+import { isStatusSuffix } from '../../lib/status-keys'
 
 interface DeleteSectionModalProps {
   keySuffix: string
@@ -17,7 +18,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const section = sections.find((s) => s.key_suffix === keySuffix)
-  const tasksInSection = tasks.filter((t) => t.status.endsWith(keySuffix))
+  const tasksInSection = tasks.filter((t) => isStatusSuffix(t.status, keySuffix))
   const taskIdsInSection = new Set(tasksInSection.map((t) => t.id))
   const notesInSection = notes.filter((n) => n.task_id !== null && taskIdsInSection.has(n.task_id))
 
