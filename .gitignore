@@ -1,0 +1,19 @@
+node_modules
+dist
+dist-electron
+.env
+.env.local
+.env.*.local
+release
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/settings.json
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
