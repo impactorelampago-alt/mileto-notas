@@ -23,6 +23,7 @@ export default function Editor() {
   const localContentRef = useRef<string>(activeNote?.content ?? '')
   const activeNoteIdRef = useRef<string | null>(null)
   activeNoteIdRef.current = activeNote?.id ?? null
+  const prevNoteIdRef = useRef<string | null>(activeNote?.id ?? null)
 
   const lineHeight = fontSize * 1.6
 
@@ -30,6 +31,15 @@ export default function Editor() {
   const isReadOnly = !!activeNote?.is_shared_with_me && activeNote.shared_permission !== 'EDIT'
 
   useEffect(() => {
+    // ANTES de trocar de nota, salva o que foi digitado na nota ANTERIOR — a
+    // edição pode não ter passado pelo debounce de 500ms (que é cancelado aqui),
+    // então sem isso o texto recém-digitado some ao voltar pra aba. (Bug grave.)
+    const prevId = prevNoteIdRef.current
+    if (prevId && prevId !== activeNote?.id) {
+      void useNotesStore.getState().updateNote(prevId, { content: localContentRef.current })
+    }
+    prevNoteIdRef.current = activeNote?.id ?? null
+
     const content = activeNote?.content ?? ''
     setLocalContent(content)
     localContentRef.current = content

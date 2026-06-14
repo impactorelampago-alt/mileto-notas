@@ -6,7 +6,7 @@ import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
 import type { NotePriority } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
-import { ownerPrefixOfKey } from '../lib/sections'
+import { ownerPrefixOfKey, suffixOfKey } from '../lib/sections'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
@@ -321,8 +321,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
       // statusData já vem ordenado por position (query)
       for (const row of statusData) {
-        const parts = row.key.split('_')
-        const suffix = parts[parts.length - 1]
+        const suffix = suffixOfKey(row.key)
         const isSystem = SYSTEM_SUFFIXES.has(suffix)
 
         // Seções pré-definidas: aparecem para todos (deduplica por label)
@@ -348,8 +347,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         if (ownKeys.has(sharedKey)) continue
         const row = statusData.find((r) => r.key === sharedKey)
         if (!row) continue
-        const parts = row.key.split('_')
-        const suffix = parts[parts.length - 1]
+        const suffix = suffixOfKey(row.key)
         const prefix = ownerPrefixOfKey(row.key)
         const ownerCleanedId = prefix ? prefix.slice(4, prefix.length - 1) : ''
         newSections.push({
@@ -643,11 +641,11 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const targetSection = sectionSuffix
       ? get().sections.find((s) => s.key_suffix === sectionSuffix)
       : undefined
-    const status = targetSection?.shared
-      ? targetSection.key
-      : sectionSuffix
-        ? `USR_${cleanedId}_${sectionSuffix}`
-        : `USR_${cleanedId}_TODO`
+    // SEMPRE a key COMPLETA da seção (própria OU compartilhada) — nunca reconstruir
+    // pelo sufixo, que trunca categorias multi-palavra (ex.: "CRM Mileto IA" → "IA")
+    // e faz a tarefa nascer com status errado (some da categoria).
+    const status = targetSection?.key
+      ?? (sectionSuffix ? `USR_${cleanedId}_${sectionSuffix}` : `USR_${cleanedId}_TODO`)
 
     const result = await opsPost<{ id: string }>('tasks', {
       title,
@@ -679,6 +677,16 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       void supabase.removeChannel(existing)
     }
 
+    // Mudança em shares → recarrega shares + refaz ops + notas, pra a categoria/
+    // nota compartilhada aparecer NA HORA pro destinatário (sem reabrir o app).
+    // O Realtime respeita RLS, então só chegam as linhas que o usuário pode ver.
+    const reconcileShares = () => {
+      void useSharingStore.getState().loadShares().then(() => {
+        void get().refreshOpsSnapshot('realtime:shares')
+        void useNotesStore.getState().loadNotes()
+      })
+    }
+
     const channel = supabase
       .channel('ops-changes')
       .on(
@@ -694,6 +702,16 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         () => {
           get().scheduleOpsRefresh('realtime:custom_statuses')
         },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'category_shares' },
+        reconcileShares,
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'note_shares' },
+        reconcileShares,
       )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
@@ -733,9 +751,14 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
    * Returns a cleanup function to be called on unmount.
    */
   setupAutoReconciliation: () => {
+    // Ao voltar o foco pro app: recarrega shares + refaz ops + notas (pega
+    // categoria/nota compartilhada mesmo se o Realtime de shares não disparou).
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        get().scheduleOpsRefresh('window-focus')
+        void useSharingStore.getState().loadShares().then(() => {
+          void get().refreshOpsSnapshot('window-focus')
+          void useNotesStore.getState().loadNotes()
+        })
       }
     }
 
