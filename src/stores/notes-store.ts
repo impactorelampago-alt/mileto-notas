@@ -281,6 +281,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       for (const n of own) byId.set(n.id, n)
       for (const n of extra) if (!byId.has(n.id)) byId.set(n.id, n)
 
+      // Preserva notas JÁ carregadas de tasks visíveis que NÃO vêm por creator nem
+      // por compartilhamento (ex.: task na MINHA coluna com nota criada por OUTRA
+      // pessoa, trazida pelo loadNotesForVisibleTasks). Sem isto, este reload as
+      // derruba e elas "somem do nada" e voltam a cada loadNotes (foco/realtime/
+      // shares) — piscando contra o loadNotesForVisibleTasks.
+      const visibleTaskIds = new Set(useOpsStore.getState().tasks.map((t) => t.id))
+      for (const n of get().notes) {
+        if (n.task_id && visibleTaskIds.has(n.task_id) && !byId.has(n.id)) {
+          byId.set(n.id, n)
+        }
+      }
+
       const sharedNotePerm = shareState.sharedWithMeNotes
       const sharedCatKeys = Object.keys(shareState.sharedWithMeCategories)
       const sharedCatPerm = shareState.sharedWithMeCategories
@@ -398,6 +410,11 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       })
       return { notes: arr }
     })
+
+    // Preenche o conteúdo das notas recém-carregadas a partir da description da
+    // task (essas notas de terceiro costumam vir com content vazio; a verdade está
+    // na task) — sem esperar o próximo snapshot.
+    get().syncNotesFromTaskDescriptions()
   },
 
   /**
@@ -417,18 +434,21 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const task = taskMap.get(note.task_id)
       if (!task) return note
 
-      // Só puxa description/priority DO task quando ele foi editado DEPOIS da
-      // nota (ex.: alterado no Ops web). Se a nota está igual ou MAIS NOVA (edição
-      // local ainda não sincronizada), NÃO sobrescreve — senão apaga o que o
-      // usuário acabou de digitar a cada refresh (polling/foco/realtime). [grave]
+      // Puxa description/priority DA task quando: (1) ela foi editada DEPOIS da nota
+      // (ex.: alterado no Ops web), OU (2) a nota está VAZIA. Nota vazia não tem
+      // edição local a proteger — é o caso da nota de terceiro recém-carregada com
+      // content vazio enquanto a task (Ops) tem a descrição; sem isto a descrição
+      // do Ops nunca aparece. Se a nota tem texto e está igual/mais nova que a task,
+      // NÃO sobrescreve — senão apaga o que o usuário acabou de digitar. [grave]
+      const noteEmpty = !note.content || note.content.trim() === ''
       const taskNewer = !!task.updated_at && task.updated_at > note.updated_at
-      if (!taskNewer) return note
+      if (!taskNewer && !noteEmpty) return note
 
       const taskDesc = task.description ?? ''
       const taskPriority = normalizePriority(task.priority)
       if (note.content !== taskDesc || note.priority !== taskPriority) {
         hasChanges = true
-        return { ...note, content: taskDesc, priority: taskPriority, updated_at: task.updated_at as string }
+        return { ...note, content: taskDesc, priority: taskPriority, updated_at: (task.updated_at ?? note.updated_at) }
       }
       return note
     })
@@ -445,11 +465,9 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
    * Idempotente: protegido por UNIQUE constraint em notes.task_id.
    */
   ensureNotesForOrphanTasks: async () => {
-    // Não cria notas automaticamente em impersonação nem no modo "Todos" (senão
-    // criaria nota do dono pra CADA task da equipe inteira).
-    if (useAuthStore.getState().viewingAs || useAuthStore.getState().viewAll) return
-    const userId = useAuthStore.getState().user?.id
-    if (!userId) return
+    const authState = useAuthStore.getState()
+    // Modo "Todos": não cria nada (criaria nota pra CADA task da equipe inteira).
+    if (authState.viewAll) return
 
     // Espera loadNotes rodar pelo menos 1 vez — evita race em que notes local
     // está vazio e o upsert tenta criar nota pra todas as tasks (bloqueadas por UNIQUE)
@@ -463,6 +481,25 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       console.log('[notes] ensureNotesForOrphanTasks: pausado (deleção em curso)')
       return
     }
+
+    // Impersonação: o insert direto não cria nota com creator = usuário VISUALIZADO
+    // (a RLS amarra creator ao usuário logado). Então cria as notas que faltam DELE
+    // via RPC SECURITY DEFINER (valida que você pode VER ele). Assim a conta que
+    // você está vendo mostra até as tarefas órfãs (criadas direto no Ops).
+    const viewing = authState.viewingAs
+    if (viewing) {
+      try {
+        const { data, error } = await supabase.rpc('notas_create_missing_notes_for', { p_owner: viewing.id })
+        if (error) { console.error('[notes] ensureNotes (impersonação):', error.message); return }
+        if ((typeof data === 'number' ? data : 0) > 0) await get().loadNotes()
+      } catch (e) {
+        console.warn('[notes] ensureNotes (impersonação):', e)
+      }
+      return
+    }
+
+    const userId = authState.user?.id
+    if (!userId) return
 
     const notes = get().notes
     const tasks = useOpsStore.getState().tasks

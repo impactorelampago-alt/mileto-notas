@@ -38,6 +38,12 @@ interface AuthState {
    * (de outro dono) retornam false.
    */
   isCategoryOwner: (sectionFullKey: string) => boolean
+  /** Ids de criadores que o usuário REAL pode VER pela árvore de núcleos. null = não carregado. */
+  visibleIds: Set<string> | null
+  /** Ids de criadores que o usuário REAL pode EDITAR (cargo_edit; DONO = todos). */
+  editableIds: Set<string> | null
+  /** Carrega os conjuntos VER/EDITAR (RPCs notas_visible/editable_creator_ids). */
+  loadPermissionSets: () => Promise<void>
 }
 
 function translateAuthError(message: string): string {
@@ -62,6 +68,8 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   teamProfiles: [],
   viewingAs: null,
   viewAll: false,
+  visibleIds: null,
+  editableIds: null,
 
   initialize: async () => {
     // Rede de segurança: a tela de "Carregando" nunca pode travar. Se o
@@ -116,7 +124,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     } catch {
       // ignora erros — força logout mesmo assim
     } finally {
-      set({ user: null, profile: null, isAuthenticated: false, viewingAs: null, viewAll: false, teamProfiles: [] })
+      set({ user: null, profile: null, isAuthenticated: false, viewingAs: null, viewAll: false, teamProfiles: [], visibleIds: null, editableIds: null })
       useCollaboratorsStore.getState().resetStore()
 
       // Limpa tokens em cache + estado dos demais stores e encerra os canais
@@ -204,5 +212,33 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     const user = get().user
     if (!user) return false
     return sectionFullKey.startsWith('USR_' + user.id.replace(/-/g, '') + '_')
+  },
+
+  /**
+   * Carrega os conjuntos de criadores que o usuário REAL pode VER / EDITAR, lidos
+   * do permission_settings via RPCs SECURITY DEFINER (mesma regra do Ops: cargo_
+   * visibility = ver, cargo_edit = editar, DONO = todos). Usado pelo seletor de
+   * contas (quem dá pra "entrar") e pelo editor (entra só lendo vs editando).
+   */
+  loadPermissionSets: async () => {
+    const toSet = (data: unknown, key: string): Set<string> => {
+      if (!Array.isArray(data)) return new Set()
+      const ids = (data as unknown[])
+        .map((r) => (typeof r === 'string' ? r : (r as Record<string, string | undefined>)[key]))
+        .filter((x): x is string => !!x)
+      return new Set(ids)
+    }
+    try {
+      const [vis, edit] = await Promise.all([
+        supabase.rpc('notas_visible_creator_ids'),
+        supabase.rpc('notas_editable_creator_ids'),
+      ])
+      set({
+        visibleIds: toSet(vis.data, 'notas_visible_creator_ids'),
+        editableIds: toSet(edit.data, 'notas_editable_creator_ids'),
+      })
+    } catch (e) {
+      console.warn('[auth] loadPermissionSets:', e)
+    }
   },
 }))

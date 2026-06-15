@@ -75,6 +75,9 @@ export default function MainApp() {
     void loadCategories()
     void loadNotesWithCollaborators()
     void loadTeamProfiles()
+    // Conjuntos VER/EDITAR (núcleo) do usuário REAL — usados pelo seletor de contas
+    // (quem dá pra entrar) e pelo editor (entrar só lendo vs editando).
+    void useAuthStore.getState().loadPermissionSets()
     // Os mapas de "compartilhado-comigo" precisam estar prontos ANTES de
     // notes-store/ops-store montarem as notas e seções compartilhadas. Encadeia:
     // carrega shares → recarrega notas + reagenda o refresh do Ops.

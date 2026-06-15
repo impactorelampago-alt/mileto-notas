@@ -12,6 +12,9 @@ export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
   const viewAll = useAuthStore((s) => s.viewAll)
+  const editableIds = useAuthStore((s) => s.editableIds)
+  const realUserId = useAuthStore((s) => s.user?.id)
+  const myRole = useAuthStore((s) => s.profile?.role)
   const { fontSize, showLineNumbers, wordWrap, setCursor, setSaveState } = useUIStore()
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
@@ -30,9 +33,16 @@ export default function Editor() {
 
   const lineHeight = fontSize * 1.6
 
-  // Somente leitura quando: modo "Todos" (visão geral da equipe) OU nota
-  // compartilhada comigo sem permissão de edição.
-  const isReadOnly = viewAll || (!!activeNote?.is_shared_with_me && activeNote.shared_permission !== 'EDIT')
+  // Posso EDITAR esta nota? Própria, ou DONO, ou compartilhada-EDIT, ou cargo com
+  // EDITAR sobre o criador (núcleo). Senão é só leitura — cobre impersonar alguém
+  // que você só pode VER e o modo "Todos".
+  const canEdit =
+    !activeNote ? false
+    : activeNote.creator_id === realUserId ? true
+    : myRole === 'DONO' ? true
+    : (!!activeNote.is_shared_with_me && activeNote.shared_permission === 'EDIT') ? true
+    : (editableIds != null && editableIds.has(activeNote.creator_id))
+  const isReadOnly = viewAll || (!!activeNote && !canEdit)
 
   useEffect(() => {
     // ANTES de trocar de nota, salva o que foi digitado na nota ANTERIOR — a
@@ -67,6 +77,20 @@ export default function Editor() {
       titleDebounceRef.current = null
     }
   }, [activeNote?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reflete no editor mudanças de conteúdo vindas de FORA (sync da description da
+  // task do Ops, realtime) enquanto ESTA MESMA nota está aberta. Sem isto, o
+  // contador atualiza mas o textarea fica vazio até trocar de aba ("aparece
+  // minutos depois"). Não mexe se o usuário está digitando (debounce pendente) nem
+  // quando o conteúdo externo já é igual ao do editor.
+  useEffect(() => {
+    if (debounceRef.current) return
+    const ext = activeNote?.content ?? ''
+    if (ext !== localContentRef.current) {
+      setLocalContent(ext)
+      localContentRef.current = ext
+    }
+  }, [activeNote?.content]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
@@ -123,6 +147,9 @@ export default function Editor() {
 
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(async () => {
+        // Edição não está mais "pendente" — libera o efeito de sync externo abaixo
+        // a refletir mudanças vindas da task/realtime nesta nota.
+        debounceRef.current = null
         const id = activeNoteIdRef.current
         if (!id) return
         await updateNote(id, { content: newContent })

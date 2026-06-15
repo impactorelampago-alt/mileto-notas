@@ -1,7 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
-import { ChevronDown, Check, UserRound, Users } from 'lucide-react'
+import { ChevronDown, Check, UserRound, Users, Eye, Pencil } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth-store'
-import { supabase } from '../../lib/supabase'
 import type { Profile, UserRole } from '../../lib/types'
 
 const ROLE_LABELS: Partial<Record<UserRole, string>> = {
@@ -49,9 +48,10 @@ export default function AccountSwitcher() {
   const setViewingAs = useAuthStore((s) => s.setViewingAs)
   const viewAll = useAuthStore((s) => s.viewAll)
   const setViewAll = useAuthStore((s) => s.setViewAll)
+  const visibleIds = useAuthStore((s) => s.visibleIds)
+  const editableIds = useAuthStore((s) => s.editableIds)
 
   const [isOpen, setIsOpen] = useState(false)
-  const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -62,19 +62,6 @@ export default function AccountSwitcher() {
     window.addEventListener('mousedown', onDown)
     return () => window.removeEventListener('mousedown', onDown)
   }, [isOpen])
-
-  // Quem o usuário pode VER pela árvore de núcleos (RLS): lista só esses na "Equipe".
-  useEffect(() => {
-    let active = true
-    void supabase.rpc('notas_visible_creator_ids').then(({ data }) => {
-      if (!active || !Array.isArray(data)) return
-      const ids = (data as unknown[])
-        .map((r) => (typeof r === 'string' ? r : (r as { notas_visible_creator_ids?: string }).notas_visible_creator_ids))
-        .filter((x): x is string => !!x)
-      setVisibleIds(new Set(ids))
-    })
-    return () => { active = false }
-  }, [user?.id])
 
   const selfProfile: Profile | null =
     profile ??
@@ -197,6 +184,9 @@ export default function AccountSwitcher() {
 
             {others.map((p) => {
               const isCurrent = viewingAs?.id === p.id
+              // Você pode EDITAR a conta dele? DONO edita todos; senão, só se o
+              // cargo dele estiver no seu cargo_edit. O resto é só VER (entra lendo).
+              const canEditP = role === 'DONO' || (editableIds != null && editableIds.has(p.id))
               return (
                 <button
                   key={p.id}
@@ -211,7 +201,15 @@ export default function AccountSwitcher() {
                     <div className="truncate" style={{ fontSize: '13px', color: '#e7e7ea' }}>{p.name ?? p.email}</div>
                     <div className="truncate" style={{ fontSize: '11px', color: '#6d6d75' }}>{ROLE_LABELS[p.role]}</div>
                   </div>
-                  {isCurrent && <Check size={14} style={{ color: '#10b981', flexShrink: 0 }} />}
+                  <span
+                    title={canEditP ? 'Você pode ver e editar' : 'Você só pode ver'}
+                    className="flex items-center"
+                    style={{ gap: 3, flexShrink: 0, color: canEditP ? '#34d399' : '#71717a', fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.3 }}
+                  >
+                    {canEditP ? <Pencil size={11} /> : <Eye size={11} />}
+                    {canEditP ? 'Editar' : 'Ver'}
+                  </span>
+                  {isCurrent && <Check size={14} style={{ color: '#10b981', flexShrink: 0, marginLeft: 4 }} />}
                 </button>
               )
             })}
