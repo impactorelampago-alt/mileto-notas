@@ -6,6 +6,7 @@ import { useMediaStore } from '../../stores/media-store'
 import { useAuthStore } from '../../stores/auth-store'
 import AddAnnotationToCompanyModal from '../ui/AddAnnotationToCompanyModal'
 import NoteMediaStrip from './NoteMediaStrip'
+import NoteDetailBar from './NoteDetailBar'
 
 export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
@@ -189,6 +190,7 @@ export default function Editor() {
 
   return (
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
+      <NoteDetailBar />
       <div className="flex flex-1 overflow-hidden">
         {showLineNumbers && (
           <div

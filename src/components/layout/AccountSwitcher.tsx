@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { ChevronDown, Check, UserRound, Users } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth-store'
+import { supabase } from '../../lib/supabase'
 import type { Profile, UserRole } from '../../lib/types'
 
 const ROLE_LABELS: Partial<Record<UserRole, string>> = {
@@ -50,6 +51,7 @@ export default function AccountSwitcher() {
   const setViewAll = useAuthStore((s) => s.setViewAll)
 
   const [isOpen, setIsOpen] = useState(false)
+  const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -61,11 +63,26 @@ export default function AccountSwitcher() {
     return () => window.removeEventListener('mousedown', onDown)
   }, [isOpen])
 
+  // Quem o usuário pode VER pela árvore de núcleos (RLS): lista só esses na "Equipe".
+  useEffect(() => {
+    let active = true
+    void supabase.rpc('notas_visible_creator_ids').then(({ data }) => {
+      if (!active || !Array.isArray(data)) return
+      const ids = (data as unknown[])
+        .map((r) => (typeof r === 'string' ? r : (r as { notas_visible_creator_ids?: string }).notas_visible_creator_ids))
+        .filter((x): x is string => !!x)
+      setVisibleIds(new Set(ids))
+    })
+    return () => { active = false }
+  }, [user?.id])
+
   const selfProfile: Profile | null =
     profile ??
     (user ? { id: user.id, name: null, email: user.email ?? '—', avatar_url: null, role: 'DONO', created_at: '', updated_at: '' } : null)
 
-  const others = teamProfiles.filter((p) => p.id !== user?.id)
+  const others = teamProfiles.filter(
+    (p) => p.id !== user?.id && (visibleIds == null || visibleIds.has(p.id)),
+  )
   const impersonating = viewingAs !== null
   const active = impersonating || viewAll
 
@@ -167,7 +184,16 @@ export default function AccountSwitcher() {
               </button>
             )}
 
-            {others.length > 0 && <div style={{ height: 1, backgroundColor: '#2a2a2a', margin: '4px 6px' }} />}
+            {others.length > 0 && (
+              <>
+                <div style={{ height: 1, backgroundColor: '#2a2a2a', margin: '4px 6px' }} />
+                <div style={{ padding: '6px 12px 2px' }}>
+                  <span style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '0.6px', color: '#6d6d75', textTransform: 'uppercase' }}>
+                    Equipe
+                  </span>
+                </div>
+              </>
+            )}
 
             {others.map((p) => {
               const isCurrent = viewingAs?.id === p.id

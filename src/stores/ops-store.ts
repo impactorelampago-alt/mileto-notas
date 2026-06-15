@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase'
 import { useNotesStore } from './notes-store'
 import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
-import type { NotePriority } from '../lib/types'
+import type { NotePriority, Recurrence } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
 import { ownerPrefixOfKey } from '../lib/sections'
 import { getStatusBase, buildStatusKey } from '../lib/status-keys'
@@ -191,6 +191,16 @@ export interface OpsTask {
   description: string | null
   priority: NotePriority | null
   updated_at?: string | null
+  due_date?: string | null
+  client_id?: string | null
+  recurrence?: Recurrence | null
+  parent_template_id?: string | null
+}
+
+/** Empresa (clients) — só o necessário pro seletor de Empresa no detalhe. */
+export interface OpsClientLite {
+  id: string
+  company: string | null
 }
 
 export const SYSTEM_SUFFIXES = new Set(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'])
@@ -201,6 +211,7 @@ export const SYSTEM_SUFFIXES = new Set(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DON
 interface OpsDomainState {
   sections: OpsSection[]
   tasks: OpsTask[]
+  clients: OpsClientLite[]
   isLoading: boolean
   isSyncing: boolean
   syncError: string | null
@@ -221,6 +232,8 @@ interface OpsActions {
   updateSection: (keySuffix: string, updates: { label?: string; color?: string }) => Promise<boolean>
   deleteSection: (keySuffix: string) => Promise<{ success: boolean; error?: string }>
   createTaskInOps: (title: string, sectionSuffix: string | null) => Promise<string | null>
+  loadClients: () => Promise<void>
+  updateTaskFields: (taskId: string, fields: { status?: string; due_date?: string | null; client_id?: string | null; recurrence?: Recurrence | null; parent_template_id?: string | null }) => Promise<void>
   subscribeToOpsChanges: () => void
   unsubscribeFromOpsChanges: () => void
   setupAutoReconciliation: () => () => void
@@ -244,6 +257,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
   // ── Domain state ──────────────────────────────────────────────────────────
   sections: [],
   tasks: [],
+  clients: [],
   isLoading: false,
   isSyncing: false,
   syncError: null,
@@ -310,14 +324,14 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       const sharedCatKeys = Object.keys(sharedCatMap)
 
       type StatusRow = { label: string; color: string; key: string; position: number }
-      type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; updated_at: string | null }
+      type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; updated_at: string | null; due_date: string | null; client_id: string | null; recurrence: Recurrence | null; parent_template_id: string | null }
 
       // Modo "Todos": busca TODAS as tarefas (a RLS já libera o gestor/dono a ver
       // tudo). Modo normal: só as MINHAS colunas (status com meu prefixo) OU
       // atribuídas a mim. A RLS limita ao que o usuário pode ver.
       const tasksQuery = viewAll
-        ? `tasks?select=id,title,status,description,priority,updated_at&order=title.asc`
-        : `tasks?select=id,title,status,description,priority,updated_at&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
+        ? `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&order=title.asc`
+        : `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
 
       const [statusData, taskData] = await Promise.all([
         opsFetch<StatusRow>(
@@ -393,7 +407,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
           const keyList = sharedCatKeys.map((k) => `"${k}"`).join(',')
           try {
             const rows = await opsFetch<TaskRow>(
-              `tasks?select=id,title,status,description,priority,updated_at&status=in.(${keyList})`,
+              `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&status=in.(${keyList})`,
             )
             extraTaskData.push(...rows)
           } catch (e) {
@@ -415,7 +429,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
             if (sharedTaskIds.length > 0) {
               const idList = sharedTaskIds.map((id) => `"${id}"`).join(',')
               const rows = await opsFetch<TaskRow>(
-                `tasks?select=id,title,status,description,priority,updated_at&id=in.(${idList})`,
+                `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&id=in.(${idList})`,
               )
               extraTaskData.push(...rows)
             }
@@ -678,10 +692,43 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
     // Atualização otimista local + agendar refresh (Realtime também dispara)
     set((s) => ({
-      tasks: [...s.tasks, { id: result.id, title, status, description: null, priority: 'LOW' }],
+      tasks: [...s.tasks, { id: result.id, title, status, description: null, priority: 'LOW', due_date: null, client_id: null, recurrence: null, parent_template_id: null }],
     }))
     get().scheduleOpsRefresh('task-created')
     return result.id
+  },
+
+  /** Carrega a lista de empresas (clients) pro seletor de Empresa no detalhe da nota. */
+  loadClients: async () => {
+    try {
+      const rows = await opsFetch<OpsClientLite>('clients?select=id,company&order=company.asc')
+      set({ clients: rows })
+    } catch (e) {
+      console.warn('[ops] loadClients:', e)
+    }
+  },
+
+  /**
+   * Atualiza campos da TASK vinculada (Prazo/Empresa/Recorrência) direto em
+   * `tasks` (fonte de verdade do Ops). Otimista; reverte em erro.
+   */
+  updateTaskFields: async (taskId, fields) => {
+    const prev = get().tasks
+    set((s) => ({ tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, ...fields } : t)) }))
+    const payload: Record<string, unknown> = {}
+    if (fields.status !== undefined) payload.status = fields.status
+    if (fields.due_date !== undefined) payload.due_date = fields.due_date
+    if (fields.client_id !== undefined) payload.client_id = fields.client_id
+    if (fields.recurrence !== undefined) payload.recurrence = fields.recurrence
+    if (fields.parent_template_id !== undefined) payload.parent_template_id = fields.parent_template_id
+    if (Object.keys(payload).length === 0) return
+    const { error } = await supabase.from('tasks').update(payload).eq('id', taskId)
+    if (error) {
+      console.error('[ops] updateTaskFields:', error.message)
+      set({ tasks: prev })
+      return
+    }
+    get().scheduleOpsRefresh('task-fields-updated')
   },
 
   /**

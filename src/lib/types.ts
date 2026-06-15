@@ -106,11 +106,20 @@ export interface NoteClientAnnotation {
 // Tipos do Mileto Ops (somente leitura)
 export interface Client {
   id: string
-  name: string
-  situation_trafego: string | null
-  situation_vendas: string | null
-  assigned_to: string | null
-  created_at: string
+  company: string | null
+}
+
+export type RecurrenceType = 'weekly' | 'biweekly' | 'monthly' | 'yearly'
+
+/** Recorrência de uma tarefa (tasks.recurrence jsonb). Espelha o Mileto Ops. */
+export interface Recurrence {
+  type: RecurrenceType
+  /** 0=domingo … 6=sábado (weekly/biweekly) */
+  weekday?: number
+  /** dia do mês 1-31 (monthly/yearly) */
+  day?: number
+  /** mês 1-12 (yearly) */
+  month?: number
 }
 
 export interface Task {
@@ -121,5 +130,7 @@ export interface Task {
   assignee_id: string | null
   client_id: string | null
   due_date: string | null
+  recurrence: Recurrence | null
+  parent_template_id: string | null
   created_at: string
 }
