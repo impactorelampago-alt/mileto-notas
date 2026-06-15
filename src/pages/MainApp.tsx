@@ -229,6 +229,21 @@ export default function MainApp() {
     }
   }, [activeTabId, subscribeToNote, unsubscribeFromNote])
 
+  // Sincroniza rascunhos locais pendentes (edições feitas offline) assim que a
+  // conexão voltar (evento `online`) ou ao focar a janela — sobem pra nuvem sem
+  // precisar reabrir o app.
+  useEffect(() => {
+    if (!isAuthenticated) return
+    const flush = () => { void useNotesStore.getState().flushPendingDrafts() }
+    const onVisible = () => { if (document.visibilityState === 'visible') flush() }
+    window.addEventListener('online', flush)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('online', flush)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [isAuthenticated])
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === 'k') {

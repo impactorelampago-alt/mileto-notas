@@ -8,7 +8,7 @@ import { useOpsStore } from './ops-store'
 import { normalizePriority } from '../lib/note-priority'
 import { doneKeyForStatus } from '../lib/sections'
 import { isDoneStatus } from '../lib/status-keys'
-import { saveDraft, removeDraft } from '../lib/local-drafts'
+import { saveDraft, removeDraft, loadDrafts } from '../lib/local-drafts'
 import { loadCompletedOrigins, persistCompletedOrigins } from '../lib/completed-origins'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
@@ -158,6 +158,8 @@ interface NotesState {
   isLoading: boolean
   hasLoadedOnce: boolean
   loadNotes: () => Promise<void>
+  /** Sobe pra nuvem os rascunhos locais pendentes (edições offline) — no `online`/foco. */
+  flushPendingDrafts: () => Promise<void>
   syncNotesFromTaskDescriptions: () => void
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
@@ -508,15 +510,20 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       }
     }
 
+    // Salva na nuvem. Se FALHAR (offline/rede), NÃO reverte a edição na tela — ela
+    // continua visível e o rascunho local fica pendente, subindo sozinho quando a
+    // conexão voltar (flushPendingDrafts no evento `online`/foco). A nuvem continua
+    // sendo a verdade: assim que o save passa, o rascunho é descartado.
+    let cloudOk = true
     try {
       await notesPatch('notes', id, updates)
     } catch (err) {
-      // Falha no PATCH da NOTA: reverte o estado local (a nota não foi salva).
+      cloudOk = false
       const message = err instanceof Error ? err.message : 'Unknown error'
-      console.error('[notes] updateNote (notes):', message)
-      set({ notes: prev })
-      return
+      console.error('[notes] updateNote (notes) — mantido local, pendente de sync:', message)
     }
+
+    if (!cloudOk) return // rascunho já salvo; sobe depois. Não toca na task ainda.
 
     // Save na nuvem da NOTA confirmado: o rascunho local desse conteúdo já não é
     // necessário (só removemos se o conteúdo salvo ainda for o atual).
@@ -540,6 +547,47 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           const message = err instanceof Error ? err.message : 'Unknown error'
           console.error('[notes] updateNote (task sync, nota mantida salva):', message)
         }
+      }
+    }
+  },
+
+  /**
+   * Sobe pra nuvem os rascunhos locais pendentes (edições feitas offline). Chamado
+   * quando a conexão volta (evento `online`) e no foco da janela — sem precisar
+   * reabrir o app. Idempotente: sem pendências é no-op; ao salvar com sucesso, o
+   * rascunho é descartado. A nuvem permanece como fonte de verdade.
+   */
+  flushPendingDrafts: async () => {
+    let drafts: Awaited<ReturnType<typeof loadDrafts>>
+    try {
+      drafts = await loadDrafts()
+    } catch {
+      return
+    }
+    const ids = Object.keys(drafts)
+    if (ids.length === 0) return
+
+    for (const id of ids) {
+      const note = get().notes.find((n) => n.id === id)
+      if (!note) continue // nota não carregada nesta sessão — pula
+      if (note.is_shared_with_me && note.shared_permission !== 'EDIT') continue
+      const draft = drafts[id]
+      try {
+        await notesPatch('notes', id, { content: draft.content, title: draft.title })
+        if (note.task_id) {
+          try {
+            await notesPatch('tasks', note.task_id, { description: draft.content, title: draft.title })
+          } catch {
+            // sync da task é best-effort
+          }
+        }
+        // Subiu: se ainda é o conteúdo atual, descarta o rascunho.
+        const cur = get().notes.find((n) => n.id === id)
+        if (cur && cur.content === draft.content && cur.title === draft.title) {
+          void removeDraft(id)
+        }
+      } catch {
+        // Ainda offline/falhou — mantém o rascunho, tenta no próximo gatilho.
       }
     }
   },
