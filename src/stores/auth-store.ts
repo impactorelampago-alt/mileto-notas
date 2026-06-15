@@ -15,12 +15,16 @@ interface AuthState {
   teamProfiles: Profile[]
   /** Conta que está sendo visualizada (impersonação). null = a própria conta. */
   viewingAs: Profile | null
+  /** Modo "Todos": agrega as notas de TODA a equipe (visão geral, só leitura). */
+  viewAll: boolean
   initialize: () => Promise<void>
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
   loadProfile: (userId: string) => Promise<void>
   loadTeamProfiles: () => Promise<void>
   setViewingAs: (profile: Profile | null) => Promise<void>
+  /** Entra/sai do modo "Todos" (visão geral de toda a equipe — leitura). */
+  setViewAll: (on: boolean) => Promise<void>
   /** ID do usuário cujas notas/tasks devem ser carregadas (impersonação ou próprio). */
   getEffectiveUserId: () => string | undefined
   /**
@@ -57,6 +61,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   isAuthenticated: false,
   teamProfiles: [],
   viewingAs: null,
+  viewAll: false,
 
   initialize: async () => {
     // Rede de segurança: a tela de "Carregando" nunca pode travar. Se o
@@ -111,7 +116,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     } catch {
       // ignora erros — força logout mesmo assim
     } finally {
-      set({ user: null, profile: null, isAuthenticated: false, viewingAs: null, teamProfiles: [] })
+      set({ user: null, profile: null, isAuthenticated: false, viewingAs: null, viewAll: false, teamProfiles: [] })
       useCollaboratorsStore.getState().resetStore()
 
       // Limpa tokens em cache + estado dos demais stores e encerra os canais
@@ -160,12 +165,28 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
    * as próprias notas, então pode vir vazio até liberarmos no banco.
    */
   setViewingAs: async (profile) => {
-    set({ viewingAs: profile })
+    set({ viewingAs: profile, viewAll: false })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
     await Promise.all([
       useNotesStore.getState().loadNotes(),
       useOpsStore.getState().refreshOpsSnapshot('view-switch'),
+    ])
+  },
+
+  /**
+   * Modo "Todos" (espelha o Mileto Ops): visão geral de TODA a equipe, agregada
+   * por categoria. É só leitura — não cria/edita/exclui (a RLS deixa o DONO/gestão
+   * LER tudo, mas editar nota de terceiro exigiria outra permissão). Sai da
+   * impersonação ao entrar.
+   */
+  setViewAll: async (on) => {
+    set({ viewAll: on, viewingAs: null })
+    useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
+    useOpsStore.setState({ tasks: [], sections: [] })
+    await Promise.all([
+      useNotesStore.getState().loadNotes(),
+      useOpsStore.getState().refreshOpsSnapshot('view-all-toggle'),
     ])
   },
 

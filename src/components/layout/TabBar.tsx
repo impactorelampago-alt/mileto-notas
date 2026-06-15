@@ -43,6 +43,7 @@ export default function TabBar() {
   const tasks = useOpsStore((s) => s.tasks)
   const signOut = useAuthStore((s) => s.signOut)
   const canDeleteNote = useAuthStore((s) => s.canDeleteNote)
+  const viewAll = useAuthStore((s) => s.viewAll)
   const noteShares = useSharingStore((s) => s.noteShares)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
 
@@ -83,21 +84,28 @@ export default function TabBar() {
         isDoneStatus(task.status) && completedOrigins[task.id]
           ? completedOrigins[task.id]
           : task.status
-      // 1) Casamento exato pela key completa: categorias próprias (custom) e compartilhadas.
-      let section = sections.find((item) => effStatus === item.key)
-      // 2) Fallback p/ categorias de SISTEMA (ex.: Lembrete/TODO): a section.key é
-      //    deduplicada por rótulo e pode ser a key de outro usuário, mas a task
-      //    carrega o MEU `USR_<id>_SUFIXO`. Casa pelo sufixo, só entre sufixos de sistema.
-      if (!section) {
-        const base = getStatusBase(effStatus)
-        if (SYSTEM_SUFFIXES.has(base)) {
-          section = sections.find((item) => item.key_suffix === base)
+      let section
+      if (viewAll) {
+        // No modo "Todos" as seções são únicas por SUFIXO (agregadas de toda a
+        // equipe) → casa pelo sufixo, agregando o "Lembrete" de todo mundo etc.
+        section = sections.find((item) => item.key_suffix === getStatusBase(effStatus))
+      } else {
+        // 1) Casamento exato pela key completa: categorias próprias (custom) e compartilhadas.
+        section = sections.find((item) => effStatus === item.key)
+        // 2) Fallback p/ categorias de SISTEMA (ex.: Lembrete/TODO): a section.key é
+        //    deduplicada por rótulo e pode ser a key de outro usuário, mas a task
+        //    carrega o MEU `USR_<id>_SUFIXO`. Casa pelo sufixo, só entre sufixos de sistema.
+        if (!section) {
+          const base = getStatusBase(effStatus)
+          if (SYSTEM_SUFFIXES.has(base)) {
+            section = sections.find((item) => item.key_suffix === base)
+          }
         }
       }
       if (section) map.set(task.id, section.key_suffix)
     }
     return map
-  }, [tasks, sections, completedOrigins])
+  }, [tasks, sections, completedOrigins, viewAll])
 
   const sectionGroups = useMemo<SectionGroup[]>(() => {
     const groups = new Map<string, SectionGroup>()
@@ -164,7 +172,7 @@ export default function TabBar() {
       ensuredSectionRef.current = null
       return
     }
-    if (useAuthStore.getState().viewingAs) return
+    if (useAuthStore.getState().viewingAs || useAuthStore.getState().viewAll) return
     const sectionKey = activeGroup.key
     if (ensuredSectionRef.current === sectionKey) return
     const t = setTimeout(() => {
@@ -194,7 +202,7 @@ export default function TabBar() {
               const priorityColors = NOTE_PRIORITY_COLORS[priority]
               const noteTask = tasks.find((t) => t.id === note.task_id)
               const isDone = noteTask ? isDoneStatus(noteTask.status) : false
-              const canComplete = !!note.task_id && !(note.is_shared_with_me && note.shared_permission !== 'EDIT')
+              const canComplete = !viewAll && !!note.task_id && !(note.is_shared_with_me && note.shared_permission !== 'EDIT')
 
               return (
                 <div
@@ -206,6 +214,7 @@ export default function TabBar() {
                   onContextMenu={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
+                    if (viewAll) return
                     setContextMenuPos({ x: e.clientX, y: e.clientY })
                     setContextMenuNoteId(noteId)
                   }}
@@ -308,7 +317,7 @@ export default function TabBar() {
                     </span>
                   )}
 
-                  {canDeleteNote(note) && (
+                  {!viewAll && canDeleteNote(note) && (
                     <span
                       onClick={(e) => { e.stopPropagation(); void deleteNote(noteId) }}
                       title="Excluir nota"
@@ -324,28 +333,30 @@ export default function TabBar() {
               )
             })}
 
-            <button
-              onClick={() => void handleCreateNote()}
-              disabled={isSubmitting}
-              className="flex shrink-0 items-center justify-center"
-              style={{
-                width: 32,
-                height: 32,
-                alignSelf: 'center',
-                marginLeft: 6,
-                borderRadius: 6,
-                color: '#71717a',
-                backgroundColor: 'transparent',
-                transition: 'background-color 140ms, color 140ms, transform 90ms',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#232323'; e.currentTarget.style.color = '#d4d4d8' }}
-              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#71717a' }}
-              onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
-              onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
-              title="Nova nota"
-            >
-              <Plus size={16} />
-            </button>
+            {!viewAll && (
+              <button
+                onClick={() => void handleCreateNote()}
+                disabled={isSubmitting}
+                className="flex shrink-0 items-center justify-center"
+                style={{
+                  width: 32,
+                  height: 32,
+                  alignSelf: 'center',
+                  marginLeft: 6,
+                  borderRadius: 6,
+                  color: '#71717a',
+                  backgroundColor: 'transparent',
+                  transition: 'background-color 140ms, color 140ms, transform 90ms',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#232323'; e.currentTarget.style.color = '#d4d4d8' }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#71717a' }}
+                onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
+                onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
+                title="Nova nota"
+              >
+                <Plus size={16} />
+              </button>
+            )}
           </>
         ) : (
           <div className="flex items-center" style={{ padding: '0 16px', color: '#52525b', fontSize: '12px' }}>

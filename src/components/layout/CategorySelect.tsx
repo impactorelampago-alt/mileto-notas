@@ -32,6 +32,7 @@ export default function CategorySelect() {
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
   const categoryShares = useSharingStore((s) => s.categoryShares)
   const isCategoryOwner = useAuthStore((s) => s.isCategoryOwner)
+  const viewAll = useAuthStore((s) => s.viewAll)
 
   const [isOpen, setIsOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
@@ -77,11 +78,16 @@ export default function CategorySelect() {
         isDoneStatus(task.status) && completedOrigins[task.id]
           ? completedOrigins[task.id]
           : task.status
-      let section = sections.find((s) => effStatus === s.key)
-      if (!section) {
-        const base = getStatusBase(effStatus)
-        if (SYSTEM_SUFFIXES.has(base)) {
-          section = sections.find((s) => s.key_suffix === base)
+      let section
+      if (viewAll) {
+        section = sections.find((s) => s.key_suffix === getStatusBase(effStatus))
+      } else {
+        section = sections.find((s) => effStatus === s.key)
+        if (!section) {
+          const base = getStatusBase(effStatus)
+          if (SYSTEM_SUFFIXES.has(base)) {
+            section = sections.find((s) => s.key_suffix === base)
+          }
         }
       }
       if (section) taskToSuffix.set(task.id, section.key_suffix)
@@ -94,7 +100,7 @@ export default function CategorySelect() {
       if (suffix) map.set(suffix, (map.get(suffix) ?? 0) + 1)
     }
     return map
-  }, [sections, tasks, notes, completedOrigins])
+  }, [sections, tasks, notes, completedOrigins, viewAll])
 
   const active = sections.find((s) => s.key_suffix === activeSectionId) ?? null
 
@@ -200,8 +206,9 @@ export default function CategorySelect() {
               // Categoria compartilhada COMIGO (de outro dono — subordinada).
               const isSharedWithMe = s.shared === true
               const isOwner = isCategoryOwner(s.key)
-              // Ações de dono só para categorias custom que SÃO minhas.
-              const canManage = isOwner && !isSystem && !isSharedWithMe
+              // Ações de dono só para categorias custom que SÃO minhas. No modo
+              // "Todos" (visão agregada de leitura) não há gerenciamento.
+              const canManage = !viewAll && isOwner && !isSystem && !isSharedWithMe
 
               return (
                 <div
@@ -323,6 +330,7 @@ export default function CategorySelect() {
             })}
           </div>
 
+          {!viewAll && (
           <div style={{ borderTop: '1px solid #2a2a2a', padding: 8 }}>
             {isCreating ? (
               <div className="flex flex-col" style={{ gap: 10 }}>
@@ -405,6 +413,7 @@ export default function CategorySelect() {
               </button>
             )}
           </div>
+          )}
         </div>
       )}
     </div>

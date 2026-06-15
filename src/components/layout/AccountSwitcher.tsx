@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react'
-import { ChevronDown, Check, UserRound } from 'lucide-react'
+import { ChevronDown, Check, UserRound, Users } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth-store'
 import type { Profile, UserRole } from '../../lib/types'
 
@@ -46,6 +46,8 @@ export default function AccountSwitcher() {
   const teamProfiles = useAuthStore((s) => s.teamProfiles)
   const viewingAs = useAuthStore((s) => s.viewingAs)
   const setViewingAs = useAuthStore((s) => s.setViewingAs)
+  const viewAll = useAuthStore((s) => s.viewAll)
+  const setViewAll = useAuthStore((s) => s.setViewAll)
 
   const [isOpen, setIsOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -65,10 +67,21 @@ export default function AccountSwitcher() {
 
   const others = teamProfiles.filter((p) => p.id !== user?.id)
   const impersonating = viewingAs !== null
+  const active = impersonating || viewAll
+
+  // "Todos" (visão geral da equipe) só para cargos de gestão — espelha o Mileto Ops.
+  // (COORDENADOR_TRAFEGO existe no enum do banco/RLS, mas não no tipo UserRole.)
+  const role = profile?.role ?? selfProfile?.role
+  const canViewAll = role === 'DONO' || role === 'GERENTE' || role === 'COORDENADOR'
 
   const choose = async (p: Profile | null) => {
     setIsOpen(false)
     await setViewingAs(p)
+  }
+
+  const chooseAll = async () => {
+    setIsOpen(false)
+    await setViewAll(true)
   }
 
   return (
@@ -79,15 +92,20 @@ export default function AccountSwitcher() {
         style={{
           height: 28,
           padding: '0 8px',
-          backgroundColor: impersonating ? 'rgba(16,185,129,0.12)' : isOpen ? '#232323' : 'transparent',
-          border: impersonating ? '1px solid rgba(16,185,129,0.3)' : '1px solid transparent',
+          backgroundColor: active ? 'rgba(16,185,129,0.12)' : isOpen ? '#232323' : 'transparent',
+          border: active ? '1px solid rgba(16,185,129,0.3)' : '1px solid transparent',
           transition: 'background-color 140ms',
         }}
-        onMouseEnter={(e) => { if (!impersonating && !isOpen) e.currentTarget.style.backgroundColor = '#232323' }}
-        onMouseLeave={(e) => { if (!impersonating && !isOpen) e.currentTarget.style.backgroundColor = 'transparent' }}
-        title={impersonating ? `Vendo como ${viewingAs?.name ?? viewingAs?.email}` : 'Trocar de conta'}
+        onMouseEnter={(e) => { if (!active && !isOpen) e.currentTarget.style.backgroundColor = '#232323' }}
+        onMouseLeave={(e) => { if (!active && !isOpen) e.currentTarget.style.backgroundColor = 'transparent' }}
+        title={viewAll ? 'Vendo tudo da equipe' : impersonating ? `Vendo como ${viewingAs?.name ?? viewingAs?.email}` : 'Trocar de conta'}
       >
-        {impersonating && viewingAs ? (
+        {viewAll ? (
+          <>
+            <Users size={15} style={{ color: '#6ee7b7' }} />
+            <span style={{ fontSize: 12, fontWeight: 500, color: '#6ee7b7' }}>Todos</span>
+          </>
+        ) : impersonating && viewingAs ? (
           <>
             <Avatar profile={viewingAs} size={18} />
             <span className="truncate" style={{ maxWidth: 120, fontSize: 12, fontWeight: 500, color: '#6ee7b7' }}>
@@ -112,20 +130,40 @@ export default function AccountSwitcher() {
           </div>
 
           <div className="flex flex-col" style={{ gap: 2, padding: '0 8px 8px', maxHeight: 360, overflowY: 'auto' }}>
+            {canViewAll && (
+              <button
+                onClick={() => void chooseAll()}
+                className="flex w-full items-center rounded-lg text-left transition-colors"
+                style={{ gap: 10, padding: '8px 10px', backgroundColor: viewAll ? 'rgba(16,185,129,0.10)' : 'transparent' }}
+                onMouseEnter={(e) => { if (!viewAll) e.currentTarget.style.backgroundColor = '#2a2a2a' }}
+                onMouseLeave={(e) => { if (!viewAll) e.currentTarget.style.backgroundColor = 'transparent' }}
+              >
+                <span style={{ width: 22, height: 22, borderRadius: 999, backgroundColor: 'rgba(16,185,129,0.16)', color: '#34d399', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Users size={13} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate" style={{ fontSize: '13px', color: '#e7e7ea' }}>Todos</div>
+                  <div className="truncate" style={{ fontSize: '11px', color: '#6d6d75' }}>Visão geral de toda a equipe</div>
+                </div>
+                {viewAll && <Check size={14} style={{ color: '#10b981', flexShrink: 0 }} />}
+              </button>
+            )}
+            {canViewAll && <div style={{ height: 1, backgroundColor: '#2a2a2a', margin: '4px 6px' }} />}
+
             {selfProfile && (
               <button
                 onClick={() => void choose(null)}
                 className="flex w-full items-center rounded-lg text-left transition-colors"
-                style={{ gap: 10, padding: '8px 10px', backgroundColor: !impersonating ? 'rgba(16,185,129,0.10)' : 'transparent' }}
-                onMouseEnter={(e) => { if (impersonating) e.currentTarget.style.backgroundColor = '#2a2a2a' }}
-                onMouseLeave={(e) => { if (impersonating) e.currentTarget.style.backgroundColor = 'transparent' }}
+                style={{ gap: 10, padding: '8px 10px', backgroundColor: !active ? 'rgba(16,185,129,0.10)' : 'transparent' }}
+                onMouseEnter={(e) => { if (active) e.currentTarget.style.backgroundColor = '#2a2a2a' }}
+                onMouseLeave={(e) => { if (active) e.currentTarget.style.backgroundColor = 'transparent' }}
               >
                 <Avatar profile={selfProfile} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate" style={{ fontSize: '13px', color: '#e7e7ea' }}>{selfProfile.name ?? selfProfile.email}</div>
                   <div className="truncate" style={{ fontSize: '11px', color: '#6d6d75' }}>Você · {ROLE_LABELS[selfProfile.role]}</div>
                 </div>
-                {!impersonating && <Check size={14} style={{ color: '#10b981', flexShrink: 0 }} />}
+                {!active && <Check size={14} style={{ color: '#10b981', flexShrink: 0 }} />}
               </button>
             )}
 

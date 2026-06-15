@@ -298,10 +298,13 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         return
       }
       const cleanedUserId = currentUserId.replace(/-/g, '')
+      const viewAll = useAuthStore.getState().viewAll
 
-      // Compartilhado-comigo só aplica fora de impersonação (contexto da própria conta).
+      // Compartilhado-comigo só aplica fora de impersonação E fora do modo "Todos"
+      // (no "Todos" já trazemos o board inteiro da equipe, sem precisar do extra).
       const notImpersonating = useAuthStore.getState().viewingAs == null
-      const sharedCatMap = notImpersonating
+      const includeShared = notImpersonating && !viewAll
+      const sharedCatMap = includeShared
         ? useSharingStore.getState().sharedWithMeCategories
         : {}
       const sharedCatKeys = Object.keys(sharedCatMap)
@@ -309,17 +312,18 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       type StatusRow = { label: string; color: string; key: string; position: number }
       type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; updated_at: string | null }
 
+      // Modo "Todos": busca TODAS as tarefas (a RLS já libera o gestor/dono a ver
+      // tudo). Modo normal: só as MINHAS colunas (status com meu prefixo) OU
+      // atribuídas a mim. A RLS limita ao que o usuário pode ver.
+      const tasksQuery = viewAll
+        ? `tasks?select=id,title,status,description,priority,updated_at&order=title.asc`
+        : `tasks?select=id,title,status,description,priority,updated_at&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
+
       const [statusData, taskData] = await Promise.all([
         opsFetch<StatusRow>(
           'custom_statuses?select=label,color,key,position&order=position.asc'
         ),
-        // Tarefas das MINHAS colunas (status com meu prefixo USR_<id>_, qualquer
-        // assignee — pra o dono ver o board inteiro, não só o que é dele) OU
-        // atribuídas a mim (pega tarefa minha numa coluna de outro). A RLS limita
-        // ao que o usuário pode ver.
-        opsFetch<TaskRow>(
-          `tasks?select=id,title,status,description,priority,updated_at&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
-        ),
+        opsFetch<TaskRow>(tasksQuery),
       ])
 
       const seen = new Set<string>()
@@ -328,6 +332,18 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       // statusData já vem ordenado por position (query)
       for (const row of statusData) {
         const suffix = getStatusBase(row.key)
+
+        // Modo "Todos": agrega TODAS as colunas da equipe, deduplicadas por SUFIXO
+        // (uma "Lembrete", uma "Em Progresso"...). O casamento tarefa↔seção no
+        // TabBar/CategorySelect passa a ser por sufixo neste modo.
+        if (viewAll) {
+          if (!seen.has(suffix)) {
+            seen.add(suffix)
+            newSections.push({ label: row.label, color: row.color, key_suffix: suffix, key: row.key })
+          }
+          continue
+        }
+
         const isSystem = SYSTEM_SUFFIXES.has(suffix)
 
         // Seções pré-definidas: aparecem para todos (deduplica por label)
@@ -372,7 +388,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       // (1) tasks nas categorias compartilhadas (status === key completa)
       // (2) tasks vinculadas às notas compartilhadas comigo
       const extraTaskData: TaskRow[] = []
-      if (notImpersonating) {
+      if (includeShared) {
         if (sharedCatKeys.length > 0) {
           const keyList = sharedCatKeys.map((k) => `"${k}"`).join(',')
           try {

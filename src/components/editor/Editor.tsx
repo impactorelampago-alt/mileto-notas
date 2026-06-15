@@ -3,12 +3,14 @@ import { NotebookPen } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useMediaStore } from '../../stores/media-store'
+import { useAuthStore } from '../../stores/auth-store'
 import AddAnnotationToCompanyModal from '../ui/AddAnnotationToCompanyModal'
 import NoteMediaStrip from './NoteMediaStrip'
 
 export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
+  const viewAll = useAuthStore((s) => s.viewAll)
   const { fontSize, showLineNumbers, wordWrap, setCursor, setSaveState } = useUIStore()
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
@@ -27,8 +29,9 @@ export default function Editor() {
 
   const lineHeight = fontSize * 1.6
 
-  // Compartilhada COMIGO sem EDIT → somente leitura (suprime save e anotação).
-  const isReadOnly = !!activeNote?.is_shared_with_me && activeNote.shared_permission !== 'EDIT'
+  // Somente leitura quando: modo "Todos" (visão geral da equipe) OU nota
+  // compartilhada comigo sem permissão de edição.
+  const isReadOnly = viewAll || (!!activeNote?.is_shared_with_me && activeNote.shared_permission !== 'EDIT')
 
   useEffect(() => {
     // ANTES de trocar de nota, salva o que foi digitado na nota ANTERIOR — a

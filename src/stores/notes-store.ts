@@ -191,11 +191,34 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   completedOrigins: loadCompletedOrigins(),
 
   loadNotes: async () => {
-    const userId = useAuthStore.getState().getEffectiveUserId()
+    const authState = useAuthStore.getState()
+    const viewAll = authState.viewAll
+    const userId = authState.getEffectiveUserId()
     if (!userId) return
 
     set({ isLoading: true })
     try {
+      // Modo "Todos": carrega TODAS as notas da equipe (a RLS libera dono/gestão a
+      // ler tudo). Visão geral de leitura — agrupadas por categoria via task_id.
+      if (viewAll) {
+        const all = await notesFetch<Note>(
+          `notes?select=*&is_archived=eq.false&order=is_pinned.desc,updated_at.desc`,
+        )
+        const localAll = new Map(get().notes.map((n) => [n.id, n]))
+        const mergedAll = all.map((note) => {
+          const base: Note = { ...note, priority: normalizePriority(note.priority) }
+          const local = localAll.get(note.id)
+          if (local && local.updated_at > note.updated_at) {
+            base.content = local.content
+            base.title = local.title
+            base.updated_at = local.updated_at
+          }
+          return base
+        })
+        set({ notes: mergedAll, isLoading: false, hasLoadedOnce: true })
+        return
+      }
+
       // (1) Minhas notas (ou as da conta visualizada em impersonação)
       const own = await notesFetch<Note>(
         `notes?select=*&creator_id=eq.${userId}&is_archived=eq.false&order=is_pinned.desc,updated_at.desc`,
@@ -334,8 +357,9 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
    * Idempotente: protegido por UNIQUE constraint em notes.task_id.
    */
   ensureNotesForOrphanTasks: async () => {
-    // Não cria notas automaticamente enquanto se visualiza outra conta (impersonação)
-    if (useAuthStore.getState().viewingAs) return
+    // Não cria notas automaticamente em impersonação nem no modo "Todos" (senão
+    // criaria nota do dono pra CADA task da equipe inteira).
+    if (useAuthStore.getState().viewingAs || useAuthStore.getState().viewAll) return
     const userId = useAuthStore.getState().user?.id
     if (!userId) return
 
