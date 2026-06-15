@@ -158,8 +158,20 @@ interface NotesState {
   isLoading: boolean
   hasLoadedOnce: boolean
   loadNotes: () => Promise<void>
+  /**
+   * Carrega a nota de TODA task visível (ops-store.tasks) que ainda não está na
+   * tela — independente de quem CRIOU a nota. loadNotes busca por `creator_id`
+   * (+ compartilhado), então não pega nota de terceiro numa task que está na MINHA
+   * coluna nem nota de categoria compartilhada antes do snapshot popular as tasks.
+   * A RLS de `notes` (notes_select_linked_task) só devolve o que o usuário pode ler.
+   * No-op quando não há nota faltando (custo zero no polling).
+   */
+  loadNotesForVisibleTasks: () => Promise<void>
   /** Sobe pra nuvem os rascunhos locais pendentes (edições offline) — no `online`/foco. */
   flushPendingDrafts: () => Promise<void>
+  /** Nº de rascunhos locais pendentes de subir pra nuvem (indicador de sincronização). */
+  pendingSync: number
+  refreshPendingSync: () => Promise<void>
   syncNotesFromTaskDescriptions: () => void
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
@@ -191,6 +203,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   isLoading: false,
   hasLoadedOnce: false,
   completedOrigins: loadCompletedOrigins(),
+  pendingSync: 0,
 
   loadNotes: async () => {
     const authState = useAuthStore.getState()
@@ -312,6 +325,79 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       console.error('[notes] loadNotes:', message)
       set({ isLoading: false })
     }
+  },
+
+  loadNotesForVisibleTasks: async () => {
+    const authState = useAuthStore.getState()
+    const userId = authState.getEffectiveUserId()
+    if (!userId) return
+    // No modo "Todos", loadNotes já traz TODAS as notas da equipe — nada a completar.
+    if (authState.viewAll) return
+
+    const tasks = useOpsStore.getState().tasks
+    if (tasks.length === 0) return
+
+    // Tasks visíveis cuja nota ainda NÃO está carregada (qualquer que seja o criador).
+    const loadedTaskIds = new Set(
+      get().notes.map((n) => n.task_id).filter((id): id is string => id !== null),
+    )
+    const missing = tasks.map((t) => t.id).filter((id) => !loadedTaskIds.has(id))
+    if (missing.length === 0) return
+
+    // Busca em lotes para não estourar o tamanho da URL.
+    const fetched: Note[] = []
+    for (let i = 0; i < missing.length; i += 100) {
+      const idList = missing
+        .slice(i, i + 100)
+        .map((id) => `"${id}"`)
+        .join(',')
+      try {
+        const rows = await notesFetch<Note>(
+          `notes?select=*&task_id=in.(${idList})&is_archived=eq.false`,
+        )
+        fetched.push(...rows)
+      } catch (e) {
+        console.warn('[notes] loadNotesForVisibleTasks:', e)
+      }
+    }
+    if (fetched.length === 0) return
+
+    // Flags de compartilhamento (categoria compartilhada → EDIT) p/ notas de terceiros.
+    const notImpersonating = authState.viewingAs == null
+    const shareState = useSharingStore.getState()
+    const sharedCatKeys = Object.keys(shareState.sharedWithMeCategories)
+    const sharedCatPerm = shareState.sharedWithMeCategories
+    const sharedNotePerm = shareState.sharedWithMeNotes
+    const taskStatusById = new Map(tasks.map((t) => [t.id, t.status]))
+
+    set((s) => {
+      const byId = new Map(s.notes.map((n) => [n.id, n]))
+      let added = 0
+      for (const note of fetched) {
+        if (byId.has(note.id)) continue
+        const base: Note = { ...note, priority: normalizePriority(note.priority) }
+        if (notImpersonating && note.creator_id !== userId) {
+          let perm: NotePermission | undefined = sharedNotePerm[note.id]
+          if (!perm && note.task_id) {
+            const status = taskStatusById.get(note.task_id)
+            if (status && sharedCatKeys.includes(status)) perm = sharedCatPerm[status]
+          }
+          if (perm) {
+            base.is_shared_with_me = true
+            base.shared_permission = perm
+          }
+        }
+        byId.set(note.id, base)
+        added++
+      }
+      if (added === 0) return s
+      const arr = Array.from(byId.values())
+      arr.sort((a, b) => {
+        if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1
+        return a.updated_at < b.updated_at ? 1 : -1
+      })
+      return { notes: arr }
+    })
   },
 
   /**
@@ -508,6 +594,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       if (merged) {
         void saveDraft(id, { content: merged.content, title: merged.title, savedAt: merged.updated_at })
       }
+      void get().refreshPendingSync()
     }
 
     // Salva na nuvem. Se FALHAR (offline/rede), NÃO reverte a edição na tela — ela
@@ -523,12 +610,13 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       console.error('[notes] updateNote (notes) — mantido local, pendente de sync:', message)
     }
 
-    if (!cloudOk) return // rascunho já salvo; sobe depois. Não toca na task ainda.
+    if (!cloudOk) { void get().refreshPendingSync(); return } // rascunho pendente; sobe depois.
 
     // Save na nuvem da NOTA confirmado: o rascunho local desse conteúdo já não é
     // necessário (só removemos se o conteúdo salvo ainda for o atual).
     if (updates.content !== undefined && get().notes.find((n) => n.id === id)?.content === updates.content) {
       void removeDraft(id)
+      void get().refreshPendingSync()
     }
 
     // Sync bidirecional: se a nota tem task_id, sincronizar com a task no Mileto.
@@ -589,6 +677,17 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       } catch {
         // Ainda offline/falhou — mantém o rascunho, tenta no próximo gatilho.
       }
+    }
+    void get().refreshPendingSync()
+  },
+
+  /** Recalcula quantos rascunhos locais estão pendentes (pro indicador de nuvem). */
+  refreshPendingSync: async () => {
+    try {
+      const d = await loadDrafts()
+      set({ pendingSync: Object.keys(d).length })
+    } catch {
+      // silencioso — o backup local nunca pode quebrar o app
     }
   },
 

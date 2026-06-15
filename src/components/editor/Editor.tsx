@@ -44,11 +44,13 @@ export default function Editor() {
       // título (600ms) também é cancelado na troca, então sem isso o título
       // não vira a primeira linha em troca rápida.
       const c = localContentRef.current
+      const prevNote = useNotesStore.getState().notes.find((n) => n.id === prevId)
+      const semTitulo = !prevNote?.title || prevNote.title.trim() === '' || prevNote.title === 'Sem título'
       const firstLine = c.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
-      void useNotesStore.getState().updateNote(prevId, {
-        content: c,
-        title: firstLine.slice(0, 60) || 'Sem título',
-      })
+      // Salva o conteúdo sempre; o título só se a nota ainda não tiver um (regra sticky).
+      void useNotesStore.getState().updateNote(prevId, semTitulo
+        ? { content: c, title: firstLine.slice(0, 60) || 'Sem título' }
+        : { content: c })
     }
     prevNoteIdRef.current = activeNote?.id ?? null
 
@@ -129,11 +131,16 @@ export default function Editor() {
         savedTimerRef.current = setTimeout(() => setSaveState('idle'), 1500)
       }, 500)
 
-      // Auto-título: primeira linha não-vazia sempre vira título
+      // Auto-título: a 1ª linha vira título APENAS enquanto a nota ainda não tem
+      // título. Depois que já tem, fica fixo (só muda em renome manual) — pra não
+      // atropelar o título definido (inclusive o que veio do Ops).
       if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
       titleDebounceRef.current = setTimeout(() => {
         const id = activeNoteIdRef.current
         if (!id) return
+        const cur = useNotesStore.getState().notes.find((n) => n.id === id)
+        const semTitulo = !cur?.title || cur.title.trim() === '' || cur.title === 'Sem título'
+        if (!semTitulo) return
         const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
         void updateNote(id, { title: firstLine.slice(0, 60) || 'Sem título' })
       }, 600)

@@ -3,6 +3,7 @@ import { Minus, Maximize2, Minimize2, X, Search } from 'lucide-react'
 import CategorySelect from './CategorySelect'
 import AccountSwitcher from './AccountSwitcher'
 import NotificationBell from './NotificationBell'
+import SyncStatus from './SyncStatus'
 import { useUIStore } from '../../stores/ui-store'
 
 export default function Titlebar() {
@@ -51,6 +52,7 @@ export default function Titlebar() {
 
       {/* Direita: sino + trocar de conta + busca + controles da janela */}
       <div className="titlebar-no-drag flex items-center">
+        <SyncStatus />
         <NotificationBell />
         <div style={{ width: 1, height: 16, backgroundColor: '#2a2a2a', margin: '0 8px' }} />
         <AccountSwitcher />

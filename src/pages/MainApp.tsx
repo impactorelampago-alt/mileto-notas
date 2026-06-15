@@ -235,6 +235,7 @@ export default function MainApp() {
   useEffect(() => {
     if (!isAuthenticated) return
     void useOpsStore.getState().loadClients()
+    void useNotesStore.getState().refreshPendingSync()
     const flush = () => { void useNotesStore.getState().flushPendingDrafts() }
     const onVisible = () => { if (document.visibilityState === 'visible') flush() }
     window.addEventListener('online', flush)

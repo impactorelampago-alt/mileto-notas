@@ -360,12 +360,23 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
         const isSystem = SYSTEM_SUFFIXES.has(suffix)
 
-        // Seções pré-definidas: aparecem para todos (deduplica por label)
-        // Seções custom: só aparecem se o key contém o userId do usuário logado
+        // Seções de sistema (workflow do Ops: TODO/IN_PROGRESS/…): UMA por SUFIXO,
+        // sempre com a key/label/cor do PRÓPRIO usuário logado. Assim a coluna não
+        // DUPLICA quando o label salvo diverge entre usuários (ex.: TODO "A Fazer"
+        // num usuário e "Lembrete" noutro — o dono lê os dois) e a tarefa nova cai
+        // sempre na coluna certa do usuário. (Antes deduplicava por label salvo, o
+        // que furava nesse caso de divergência.)
+        // Seções custom: só aparecem se o key contém o userId do usuário logado.
         if (isSystem) {
-          if (!seen.has(row.label)) {
-            seen.add(row.label)
+          const existing = newSections.find((s) => s.key_suffix === suffix)
+          const mine = cleanedUserId ? row.key.includes(cleanedUserId) : false
+          if (!existing) {
             newSections.push({ label: row.label, color: row.color, key_suffix: suffix, key: row.key })
+          } else if (mine) {
+            // Achou a MINHA row: prevalece (key/label/cor do usuário logado).
+            existing.label = row.label
+            existing.color = row.color
+            existing.key = row.key
           }
         } else if (cleanedUserId && row.key.includes(cleanedUserId)) {
           if (!seen.has(row.label)) {
@@ -468,6 +479,11 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
       // Sincronizar conteúdo das notas vinculadas com description das tasks
       useNotesStore.getState().syncNotesFromTaskDescriptions()
+
+      // Carrega a nota de tasks visíveis criadas por OUTRA pessoa (coluna minha com
+      // nota de terceiro, ou categoria compartilhada) — loadNotes busca por creator
+      // e não pega essas. No-op quando não há nota faltando.
+      void useNotesStore.getState().loadNotesForVisibleTasks()
 
       console.log(
         `[ops-sync] Refresh complete. ${newSections.length} sections, ${newTasks.length} tasks.` +

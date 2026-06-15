@@ -132,6 +132,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
         openTabs: [],
         activeTabId: null,
         hasLoadedOnce: false,
+        pendingSync: 0,
         noteIdsWithCollaborators: new Set(),
       })
       useOpsStore.setState({ sections: [], tasks: [], activeSectionId: null })
@@ -165,6 +166,9 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
    * as próprias notas, então pode vir vazio até liberarmos no banco.
    */
   setViewingAs: async (profile) => {
+    // Sobe rascunhos pendentes ANTES de trocar de conta — senão a edição ainda
+    // não sincronizada (que vive só no rascunho local) some ao resetar e recarregar.
+    await useNotesStore.getState().flushPendingDrafts()
     set({ viewingAs: profile, viewAll: false })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
@@ -181,6 +185,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
    * impersonação ao entrar.
    */
   setViewAll: async (on) => {
+    await useNotesStore.getState().flushPendingDrafts()
     set({ viewAll: on, viewingAs: null })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
