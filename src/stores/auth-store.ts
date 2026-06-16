@@ -28,8 +28,9 @@ interface AuthState {
   /** ID do usuário cujas notas/tasks devem ser carregadas (impersonação ou próprio). */
   getEffectiveUserId: () => string | undefined
   /**
-   * True se o usuário REAL é o dono da nota (pode excluir). Nunca usa viewingAs —
-   * exclusão é prerrogativa do dono real, não da conta visualizada.
+   * True se o usuário REAL pode EXCLUIR a nota: é o criador, OU é DONO, OU tem
+   * cargo com EDITAR sobre o criador (editableIds). Sempre avalia pelo usuário
+   * REAL (nunca viewingAs). A exclusão de nota de terceiro vai por RPC validado.
    */
   canDeleteNote: (note: Note) => boolean
   /**
@@ -205,7 +206,14 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   getEffectiveUserId: () => get().viewingAs?.id ?? get().user?.id,
 
-  canDeleteNote: (note) => note.creator_id === get().user?.id,
+  canDeleteNote: (note) => {
+    const realId = get().user?.id
+    if (!realId) return false
+    if (note.creator_id === realId) return true          // minha nota
+    if (get().profile?.role === 'DONO') return true        // DONO apaga de todos
+    const ed = get().editableIds
+    return ed != null && ed.has(note.creator_id)           // cargo com EDITAR
+  },
 
   isCategoryOwner: (sectionFullKey) => {
     if (get().profile?.role === 'DONO') return true

@@ -7,7 +7,7 @@ import type { Note, NotePermission } from '../lib/types'
 import { useOpsStore } from './ops-store'
 import { normalizePriority } from '../lib/note-priority'
 import { doneKeyForStatus } from '../lib/sections'
-import { isDoneStatus } from '../lib/status-keys'
+import { isDoneStatus, buildStatusKey } from '../lib/status-keys'
 import { saveDraft, removeDraft, loadDrafts } from '../lib/local-drafts'
 import { loadCompletedOrigins, persistCompletedOrigins } from '../lib/completed-origins'
 
@@ -446,9 +446,14 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
       const taskDesc = task.description ?? ''
       const taskPriority = normalizePriority(task.priority)
-      if (note.content !== taskDesc || note.priority !== taskPriority) {
+      // PROTEÇÃO ANTI-APAGAMENTO: uma description VAZIA da task NUNCA apaga o
+      // conteúdo da nota. A task pode estar só atrasada na sincronização (ou sem
+      // permissão de sync na categoria compartilhada) — e o clock-skew fazia o
+      // taskNewer dar true sempre, apagando o texto que o usuário acabou de digitar.
+      const nextContent = (taskDesc === '' && !noteEmpty) ? (note.content ?? '') : taskDesc
+      if (note.content !== nextContent || note.priority !== taskPriority) {
         hasChanges = true
-        return { ...note, content: taskDesc, priority: taskPriority, updated_at: (task.updated_at ?? note.updated_at) }
+        return { ...note, content: nextContent, priority: taskPriority, updated_at: (task.updated_at ?? note.updated_at) }
       }
       return note
     })
@@ -544,6 +549,26 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
     const { title = 'Nova nota', categoryId = null, sectionSuffix } = options
     const targetSection = sectionSuffix !== undefined ? sectionSuffix : useOpsStore.getState().activeSectionId
+
+    // Impersonação: cria a nota COMO a pessoa visualizada (RPC valida no banco que
+    // você pode EDITÁ-la — DONO/cargo_edit). Sem isso a nota seria criada na SUA
+    // conta (some na dela) e o título/texto se perderiam na troca entre as visões.
+    const viewing = useAuthStore.getState().viewingAs
+    if (viewing) {
+      const section = useOpsStore.getState().sections.find((s) => s.key_suffix === targetSection)
+      const status = section?.key ?? buildStatusKey(viewing.id, targetSection ?? 'TODO')
+      const { data, error } = await supabase.rpc('notas_create_note_for', {
+        p_owner: viewing.id, p_status: status, p_title: title, p_content: '',
+      })
+      if (error || !data) {
+        console.error('[notes] createNote (impersonação):', error?.message)
+        return null
+      }
+      await get().loadNotes()
+      const created = get().notes.find((n) => n.id === data) ?? null
+      if (created) get().openTab(created.id)
+      return created
+    }
 
     const prevActiveTabId = get().activeTabId
     const now = new Date().toISOString()
@@ -824,6 +849,34 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       return
     }
     const taskId = noteToDelete.task_id
+
+    // Nota de OUTRA pessoa (impersonação / núcleo): apaga via RPC, que valida no
+    // banco que você pode editá-la (DONO ou cargo com EDITAR). O delete direto
+    // (REST com seu JWT) seria bloqueado pela RLS — só o criador apaga.
+    const realUserId = useAuthStore.getState().user?.id
+    if (realUserId && noteToDelete.creator_id !== realUserId) {
+      _deletionInProgress = true
+      try {
+        const { data, error } = await supabase.rpc('notas_delete_note_for', { p_note_id: id })
+        if (error || data !== true) {
+          console.error('[notes] deleteNote (RPC outra pessoa):', error?.message ?? 'sem permissão')
+          return
+        }
+        set((s) => {
+          const newTabs = s.openTabs.filter((t) => t !== id)
+          let newActive = s.activeTabId
+          if (s.activeTabId === id) {
+            const idx = s.openTabs.indexOf(id)
+            newActive = newTabs[idx] ?? newTabs[idx - 1] ?? null
+          }
+          return { notes: s.notes.filter((n) => n.id !== id), openTabs: newTabs, activeTabId: newActive }
+        })
+        console.log('[notes] deleteNote: nota de outra pessoa apagada via RPC')
+      } finally {
+        _deletionInProgress = false
+      }
+      return
+    }
 
     _deletionInProgress = true
     try {
