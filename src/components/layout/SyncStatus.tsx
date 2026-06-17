@@ -1,17 +1,21 @@
 import { useEffect, useState } from 'react'
-import { Cloud, CloudOff, RefreshCw } from 'lucide-react'
+import { Cloud, CloudOff, RefreshCw, WifiOff } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore } from '../../stores/ops-store'
 
 /**
- * Indicador de nuvem (ao lado do sino). Mostra o estado de sincronização com o
- * Mileto Ops e permite forçar a sincronização ao clicar:
- *  - offline  → sem internet (alterações ficam salvas localmente).
- *  - pending  → há rascunhos locais pendentes / salvando.
- *  - synced   → online e sem pendências.
+ * Indicador de nuvem / tempo real (ao lado do sino). Comunica o estado de
+ * sincronização com o Mileto Ops e a saúde do tempo real, e permite forçar a
+ * sincronização (e reconectar o tempo real) ao clicar:
+ *  - offline        → sem internet: bloqueado (alterações ficam salvas localmente).
+ *  - realtime-error → online, mas o canal de tempo real caiu: pode estar vendo
+ *                     dados desatualizados — clique reconecta e sincroniza.
+ *  - pending        → há rascunhos locais pendentes / salvando.
+ *  - live           → online, sincronizado e recebendo atualizações ao vivo.
  */
 export default function SyncStatus() {
   const pendingSync = useNotesStore((s) => s.pendingSync)
+  const realtimeStatus = useOpsStore((s) => s.realtimeStatus)
   const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true))
   const [syncing, setSyncing] = useState(false)
 
@@ -26,26 +30,43 @@ export default function SyncStatus() {
     }
   }, [])
 
-  const state: 'offline' | 'pending' | 'synced' =
-    !online ? 'offline' : syncing || pendingSync > 0 ? 'pending' : 'synced'
+  // Prioridade: sem internet > tempo real caiu > salvando > ao vivo.
+  const state: 'offline' | 'realtime-error' | 'pending' | 'live' =
+    !online ? 'offline'
+      : syncing || pendingSync > 0 ? 'pending'
+        : realtimeStatus === 'error' ? 'realtime-error'
+          : 'live'
 
   const cfg = {
     offline: {
-      Icon: CloudOff,
-      color: '#f87171',
+      Icon: WifiOff,
+      color: '#ef4444',
+      spin: false,
+      pulse: false,
       title: 'Sem conexão — suas alterações estão salvas localmente e sobem quando a internet voltar',
+    },
+    'realtime-error': {
+      Icon: CloudOff,
+      color: '#f97316',
+      spin: false,
+      pulse: true,
+      title: 'Tempo real indisponível — você pode estar vendo dados desatualizados. Clique para reconectar e sincronizar',
     },
     pending: {
       Icon: RefreshCw,
       color: '#f59e0b',
+      spin: true,
+      pulse: false,
       title: syncing
         ? 'Sincronizando com o Mileto Ops…'
         : `Falta sincronizar${pendingSync > 0 ? ` (${pendingSync})` : ''} — clique para sincronizar agora`,
     },
-    synced: {
+    live: {
       Icon: Cloud,
       color: '#34d399',
-      title: 'Sincronizado com o Mileto Ops — clique para forçar a sincronização',
+      spin: false,
+      pulse: false,
+      title: 'Sincronizado e ao vivo com o Mileto Ops — clique para forçar a sincronização',
     },
   }[state]
   const Icon = cfg.Icon
@@ -54,6 +75,11 @@ export default function SyncStatus() {
     if (syncing) return
     setSyncing(true)
     try {
+      // Se o tempo real caiu, reconecta o canal antes de sincronizar (cobre o
+      // estado "realtime-error" — clicar resolve).
+      if (useOpsStore.getState().realtimeStatus !== 'live') {
+        useOpsStore.getState().subscribeToOpsChanges()
+      }
       await useNotesStore.getState().flushPendingDrafts()
       await useOpsStore.getState().refreshOpsSnapshot('manual-sync')
       await useNotesStore.getState().loadNotes()
@@ -76,8 +102,8 @@ export default function SyncStatus() {
     >
       <Icon
         size={15}
-        className={syncing ? 'animate-spin' : undefined}
-        style={syncing ? { animationDuration: '1s' } : undefined}
+        className={cfg.spin ? 'animate-spin' : cfg.pulse ? 'animate-pulse' : undefined}
+        style={cfg.spin ? { animationDuration: '1s' } : undefined}
       />
     </button>
   )

@@ -1,45 +1,23 @@
-import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Download, Loader2, RefreshCw, AlertTriangle } from 'lucide-react'
-
-type Status = 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+import { useUpdateStore } from '../stores/update-store'
 
 /**
- * Notificação de atualização DENTRO do Mileto Notas. Aparece (e fica) quando há
- * versão nova; o botão "Instalar atualização" baixa (com progresso) e instala/
- * reinicia o app. Persistente até o usuário atualizar.
+ * Notificação de atualização DENTRO do Mileto Notas (card no canto inferior
+ * direito). Aparece quando há versão nova; o botão "Instalar atualização" baixa
+ * (com progresso) e instala/reinicia. Lê o estado do [update-store] — o mesmo
+ * que alimenta o botão da titlebar (um único registrador de eventos IPC).
  */
 export default function UpdateBanner() {
-  const [status, setStatus] = useState<Status>('idle')
-  const [version, setVersion] = useState('')
-  const [percent, setPercent] = useState(0)
-  const [errorMsg, setErrorMsg] = useState('')
+  const status = useUpdateStore((s) => s.status)
+  const version = useUpdateStore((s) => s.version)
+  const percent = useUpdateStore((s) => s.percent)
+  const errorMsg = useUpdateStore((s) => s.errorMsg)
+  const install = useUpdateStore((s) => s.install)
 
-  useEffect(() => {
-    const api = window.electronAPI?.updates
-    if (!api) return
-    api.onAvailable((info) => {
-      setVersion(info?.version ?? '')
-      setStatus((s) => (s === 'downloading' || s === 'installing' ? s : 'available'))
-    })
-    api.onProgress((info) => {
-      setPercent(info?.percent ?? 0)
-      setStatus((s) => (s === 'installing' ? s : 'downloading'))
-    })
-    api.onDownloaded(() => setStatus('installing'))
-    api.onError((info) => {
-      setErrorMsg(info?.message ?? 'Erro desconhecido')
-      setStatus('error')
-    })
-  }, [])
-
-  const startInstall = () => {
-    setPercent(0)
-    setStatus('downloading')
-    window.electronAPI?.updates?.install()
-  }
-
-  if (status === 'idle') return null
+  // O card só aparece pra estados "ruidosos"; idle/checking/uptodate ficam só no
+  // botão discreto da titlebar.
+  if (status === 'idle' || status === 'checking' || status === 'uptodate') return null
 
   const title =
     status === 'error' ? 'Falha na atualização'
@@ -89,7 +67,7 @@ export default function UpdateBanner() {
 
           {(status === 'available' || status === 'error') && (
             <button
-              onClick={startInstall}
+              onClick={() => install()}
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg transition-colors"
               style={{ height: 38, backgroundColor: '#10b981', color: '#04140e', fontSize: 13, fontWeight: 700 }}
               onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#0ea372' }}

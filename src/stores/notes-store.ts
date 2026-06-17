@@ -710,6 +710,12 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       ),
     }))
 
+    // Havia edição NÃO sincronizada (rascunho pendente) ANTES desta chamada? Usado
+    // na limpeza abaixo: um update SÓ de título (renome) não pode descartar o
+    // rascunho se já havia conteúdo pendente de sync — senão perderia o texto que
+    // ainda não subiu (o patch de título não reenvia o conteúdo).
+    const wasPendingBefore = _pendingDraftIds.has(id)
+
     // Rede de segurança local imediata: ao mudar conteúdo/título, grava um
     // rascunho local (invisível, em %AppData%). Se a nuvem falhar/estiver
     // offline, nada é perdido — restaurado silenciosamente ao reabrir.
@@ -737,11 +743,27 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
     if (!cloudOk) { void get().refreshPendingSync(); return } // rascunho pendente; sobe depois.
 
-    // Save na nuvem da NOTA confirmado: o rascunho local desse conteúdo já não é
-    // necessário (só removemos se o conteúdo salvo ainda for o atual).
-    if (updates.content !== undefined && get().notes.find((n) => n.id === id)?.content === updates.content) {
+    // Save na nuvem da NOTA confirmado: descartamos o rascunho/pending SÓ quando
+    // NADA ficou por sincronizar. O patch é PARCIAL e o rascunho guarda os dois
+    // campos (content+title), então:
+    //  - o campo PRESENTE neste patch acabou de subir e ainda casa com o atual;
+    //  - o campo AUSENTE só está garantidamente sincronizado se NÃO havia pendência
+    //    ANTES desta chamada (wasPendingBefore=false). Senão ele pode ter uma
+    //    edição que nunca subiu (ex.: renome offline que falhou) — mantemos o
+    //    rascunho e o flushPendingDrafts (que reenvia content+title juntos) sobe e
+    //    limpa depois. Sem isso, ou se perdia o campo ausente, ou o id ficava preso
+    //    em _pendingDraftIds matando o sync/realtime externo da nota.
+    const saved = get().notes.find((n) => n.id === id)
+    const contentOk = updates.content !== undefined ? saved?.content === updates.content : !wasPendingBefore
+    const titleOk = updates.title !== undefined ? saved?.title === updates.title : !wasPendingBefore
+    if (saved && (updates.content !== undefined || updates.title !== undefined) && contentOk && titleOk) {
       _pendingDraftIds.delete(id) // save confirmado: já não há edição local a proteger
-      void removeDraft(id)
+      // Aguarda o removeDraft GRAVAR antes de o refreshPendingSync RELER o disco —
+      // senão a releitura (que faz clear()+rehidrata) re-injetaria o id recém
+      // removido (race de read-modify-write não atômico), deixando o id preso e o
+      // realtime de entrada da nota suprimido. refreshPendingSync fica best-effort
+      // (void) pra uma eventual falha dele não interromper o sync da task abaixo.
+      await removeDraft(id)
       void get().refreshPendingSync()
     }
 

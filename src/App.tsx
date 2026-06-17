@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useAuthStore } from './stores/auth-store'
 import { useNotesStore } from './stores/notes-store'
+import { useUpdateStore } from './stores/update-store'
 import { saveDraft, saveSession } from './lib/local-drafts'
 import Login from './pages/Login'
 import MainApp from './pages/MainApp'
@@ -14,6 +15,11 @@ export default function App() {
   useEffect(() => {
     initialize()
   }, [initialize])
+
+  // Registra os listeners de atualização UMA vez (titlebar + banner leem daqui).
+  useEffect(() => {
+    useUpdateStore.getState().init()
+  }, [])
 
   useEffect(() => {
     window.electronAPI.onBeforeClose(async () => {
@@ -69,7 +75,8 @@ export default function App() {
   return (
     <>
       {content}
-      <UpdateBanner />
+      {/* Banner de update só depois de logado (na tela de Login não há barra). */}
+      {isAuthenticated && <UpdateBanner />}
     </>
   )
 }

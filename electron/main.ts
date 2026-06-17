@@ -150,6 +150,9 @@ function doInstall(): void {
 autoUpdater.on('update-available', (info) => {
   sendToRenderer('update:available', { version: info?.version ?? '' })
 })
+autoUpdater.on('update-not-available', () => {
+  sendToRenderer('update:not-available')
+})
 autoUpdater.on('download-progress', (p) => {
   sendToRenderer('update:progress', { percent: Math.round(p?.percent ?? 0) })
 })
@@ -175,6 +178,17 @@ ipcMain.on('update:install', () => {
     sendToRenderer('update:error', { message: err instanceof Error ? err.message : String(err) })
   })
 })
+
+// Verificação manual (botão na titlebar): emite update:available OU
+// update:not-available; o renderer reflete o resultado.
+ipcMain.on('update:check', () => {
+  autoUpdater.checkForUpdates().catch((err) => {
+    sendToRenderer('update:error', { message: err instanceof Error ? err.message : String(err) })
+  })
+})
+
+// Versão instalada (pro tooltip / estado "atualizado" na UI).
+ipcMain.handle('app:getVersion', () => app.getVersion())
 
 // Verifica atualização no início (silencioso; só avisa se houver).
 app.whenReady().then(() => {

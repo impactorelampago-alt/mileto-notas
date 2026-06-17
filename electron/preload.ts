@@ -19,11 +19,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('app:before-close', () => callback())
   },
   closeApp: () => ipcRenderer.send('app:close-ready'),
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
   updates: {
     install: () => ipcRenderer.send('update:install'),
+    check: () => ipcRenderer.send('update:check'),
     onAvailable: (callback: (info: { version: string }) => void) => {
       ipcRenderer.removeAllListeners('update:available')
       ipcRenderer.on('update:available', (_e, info) => callback(info))
+    },
+    onNotAvailable: (callback: () => void) => {
+      ipcRenderer.removeAllListeners('update:not-available')
+      ipcRenderer.on('update:not-available', () => callback())
     },
     onProgress: (callback: (info: { percent: number }) => void) => {
       ipcRenderer.removeAllListeners('update:progress')

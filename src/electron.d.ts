@@ -17,9 +17,14 @@ declare global {
       }
       onBeforeClose: (callback: () => void) => void
       closeApp: () => void
+      app: {
+        getVersion: () => Promise<string>
+      }
       updates: {
         install: () => void
+        check: () => void
         onAvailable: (callback: (info: { version: string }) => void) => void
+        onNotAvailable: (callback: () => void) => void
         onProgress: (callback: (info: { percent: number }) => void) => void
         onDownloaded: (callback: () => void) => void
         onError: (callback: (info: { message: string }) => void) => void

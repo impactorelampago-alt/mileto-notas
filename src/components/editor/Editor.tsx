@@ -24,7 +24,6 @@ export default function Editor() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const lineNumbersRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const localContentRef = useRef<string>(activeNote?.content ?? '')
   const activeNoteIdRef = useRef<string | null>(null)
@@ -47,17 +46,16 @@ export default function Editor() {
     // então sem isso o texto recém-digitado some ao voltar pra aba. (Bug grave.)
     const prevId = prevNoteIdRef.current
     if (prevId && prevId !== activeNote?.id) {
-      // Salva conteúdo E título (1ª linha) da nota anterior — o debounce de
-      // título (600ms) também é cancelado na troca, então sem isso o título
-      // não vira a primeira linha em troca rápida.
+      // Salva conteúdo (e título = 1ª linha) da nota anterior — o debounce de
+      // 500ms é cancelado na troca, então sem isso o texto recém-digitado some.
       const c = localContentRef.current
-      const prevNote = useNotesStore.getState().notes.find((n) => n.id === prevId)
-      const semTitulo = !prevNote?.title || prevNote.title.trim() === '' || prevNote.title === 'Sem título' || prevNote.title === 'Sem titulo' || prevNote.title === 'Nova nota'
       const firstLine = c.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
-      // Salva o conteúdo sempre; o título só se a nota ainda não tiver um (regra sticky).
-      void useNotesStore.getState().updateNote(prevId, semTitulo
-        ? { content: c, title: firstLine.slice(0, 60) || 'Sem título' }
-        : { content: c })
+      // Título acompanha a 1ª linha; conteúdo VAZIO preserva o título atual (NÃO
+      // vira "Sem título") — senão abrir uma nota de task do Ops sem descrição e
+      // trocar de aba apagaria o título no banco compartilhado (tasks.title).
+      const patch: { content: string; title?: string } = { content: c }
+      if (firstLine !== '') patch.title = firstLine.slice(0, 60)
+      void useNotesStore.getState().updateNote(prevId, patch)
     }
     prevNoteIdRef.current = activeNote?.id ?? null
 
@@ -68,10 +66,6 @@ export default function Editor() {
     if (debounceRef.current) {
       clearTimeout(debounceRef.current)
       debounceRef.current = null
-    }
-    if (titleDebounceRef.current) {
-      clearTimeout(titleDebounceRef.current)
-      titleDebounceRef.current = null
     }
   }, [activeNote?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -151,25 +145,23 @@ export default function Editor() {
         debounceRef.current = null
         const id = activeNoteIdRef.current
         if (!id) return
-        await updateNote(id, { content: newContent })
+        // Título acompanha a 1ª linha não-vazia do conteúdo (modelo "título =
+        // primeira linha"). Conteúdo VAZIO preserva o título atual (não vira
+        // "Sem título"). Conteúdo e título vão no MESMO update: um só patch →
+        // um só evento de realtime, e sem update só-de-título (que deixaria a
+        // nota presa em _pendingDraftIds e mataria o sync/realtime dela).
+        const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
+        const cur = useNotesStore.getState().notes.find((n) => n.id === id)
+        const patch: { content: string; title?: string } = { content: newContent }
+        if (firstLine !== '') {
+          const nextTitle = firstLine.slice(0, 60)
+          if (cur?.title !== nextTitle) patch.title = nextTitle
+        }
+        await updateNote(id, patch)
         setSaveState('saved')
         if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
         savedTimerRef.current = setTimeout(() => setSaveState('idle'), 1500)
       }, 500)
-
-      // Auto-título: a 1ª linha vira título APENAS enquanto a nota ainda não tem
-      // título. Depois que já tem, fica fixo (só muda em renome manual) — pra não
-      // atropelar o título definido (inclusive o que veio do Ops).
-      if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
-      titleDebounceRef.current = setTimeout(() => {
-        const id = activeNoteIdRef.current
-        if (!id) return
-        const cur = useNotesStore.getState().notes.find((n) => n.id === id)
-        const semTitulo = !cur?.title || cur.title.trim() === '' || cur.title === 'Sem título' || cur.title === 'Sem titulo' || cur.title === 'Nova nota'
-        if (!semTitulo) return
-        const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
-        void updateNote(id, { title: firstLine.slice(0, 60) || 'Sem título' })
-      }, 600)
     },
     [updateNote, setSaveState, isReadOnly],
   )

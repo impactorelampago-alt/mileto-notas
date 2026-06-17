@@ -241,6 +241,8 @@ interface OpsActions {
 
 type OpsState = OpsDomainState & OpsUIState & OpsActions & {
   realtimeChannel: RealtimeChannel | null
+  /** Saúde do canal de realtime (ops-changes) — alimenta o indicador na barra. */
+  realtimeStatus: 'connecting' | 'live' | 'error'
 }
 
 // ─── Module‑level bookkeeping (never causes React re‑renders) ─────────────────
@@ -269,6 +271,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
   // ── Internal ──────────────────────────────────────────────────────────────
   realtimeChannel: null,
+  realtimeStatus: 'connecting',
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -780,10 +783,17 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
    * Handlers are **pure triggers** — they NEVER mutate state directly.
    */
   subscribeToOpsChanges: () => {
+    // Cancela um retry pendente: (re)subscrever agora (manual ou inicial) torna o
+    // retry antigo redundante — sem isso ele dispararia um segundo subscribe.
+    if (_retryTimer) {
+      clearTimeout(_retryTimer)
+      _retryTimer = null
+    }
     const existing = get().realtimeChannel
     if (existing) {
       void supabase.removeChannel(existing)
     }
+    set({ realtimeStatus: 'connecting' })
 
     // Mudança em shares → recarrega shares + refaz ops + notas, pra a categoria/
     // nota compartilhada aparecer NA HORA pro destinatário (sem reabrir o app).
@@ -826,25 +836,39 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         { event: '*', schema: 'public', table: 'note_shares' },
         reconcileShares,
       )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[ops-sync] Realtime channel subscribed')
-        }
-        if (status === 'CHANNEL_ERROR') {
-          console.error('[ops-sync] Realtime channel error — retrying in 5 s')
-          // Rastreia o retry (1 só por vez) e só re-subscreve se ainda autenticado —
-          // senão um retry pendente recriaria um canal órfão após logout/unmount.
-          if (_retryTimer) clearTimeout(_retryTimer)
-          _retryTimer = setTimeout(() => {
-            _retryTimer = null
-            if (useAuthStore.getState().isAuthenticated) {
-              get().subscribeToOpsChanges()
-            }
-          }, 5000)
-        }
-      })
 
+    // Registra o canal ANTES de assinar: o callback de status abaixo usa isso pra
+    // ignorar eventos de um canal que já foi substituído/removido.
     set({ realtimeChannel: channel })
+
+    channel.subscribe((status) => {
+      // Guarda de identidade: removeChannel() do canal ANTIGO dispara 'CLOSED' no
+      // callback DELE depois de já termos trocado o canal atual. Sem esta guarda,
+      // esse CLOSED tardio marcaria 'error' espúrio (flicker) e re-armaria um retry
+      // órfão que derrubaria o canal novo saudável (churn de ~5s). Só o canal
+      // vigente reage.
+      if (get().realtimeChannel !== channel) return
+
+      if (status === 'SUBSCRIBED') {
+        set({ realtimeStatus: 'live' })
+        console.log('[ops-sync] Realtime channel subscribed')
+      }
+      // CHANNEL_ERROR / TIMED_OUT / CLOSED: o canal caiu — marca erro (alimenta o
+      // indicador da barra) e re-tenta. Rastreia o retry (1 só por vez) e só
+      // re-subscreve se ainda autenticado — senão um retry pendente recriaria um
+      // canal órfão após logout/unmount.
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        set({ realtimeStatus: 'error' })
+        console.error(`[ops-sync] Realtime channel ${status} — retrying in 5 s`)
+        if (_retryTimer) clearTimeout(_retryTimer)
+        _retryTimer = setTimeout(() => {
+          _retryTimer = null
+          if (useAuthStore.getState().isAuthenticated) {
+            get().subscribeToOpsChanges()
+          }
+        }, 5000)
+      }
+    })
   },
 
   /**
@@ -863,8 +887,11 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const channel = get().realtimeChannel
     if (channel) {
       void supabase.removeChannel(channel)
-      set({ realtimeChannel: null })
     }
+    // Zera canal e status (senão o indicador ficaria preso no último valor — ex.:
+    // 'error' — após logout/unmount). O CLOSED tardio do removeChannel é ignorado
+    // pela guarda de identidade (realtimeChannel já é null).
+    set({ realtimeChannel: null, realtimeStatus: 'connecting' })
   },
 
   /**
