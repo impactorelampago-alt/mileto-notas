@@ -151,6 +151,15 @@ export default function TabBar() {
     setRenameValue('')
   }
 
+  // Concluir/reabrir: ANTES de mexer no status, força salvar o que está no editor
+  // da nota ativa (o debounce de 500ms pode não ter rodado), pra o refresh/sync
+  // pós-conclusão nunca perder o texto recém-digitado. force-save grava o conteúdo
+  // no store na hora (set síncrono) + sobe pra nuvem; só então conclui.
+  const concludeNote = (noteId: string) => {
+    if (noteId === activeTabId) window.dispatchEvent(new Event('force-save'))
+    void toggleComplete(noteId)
+  }
+
   const handleCreateNote = async () => {
     if (isSubmitting || !activeSectionId) return
     setIsSubmitting(true)
@@ -307,7 +316,7 @@ export default function TabBar() {
                      A nota NÃO sai da categoria — só muda de cor (e risca o título). */}
                   {canComplete && (
                     <span
-                      onClick={(e) => { e.stopPropagation(); void toggleComplete(noteId) }}
+                      onClick={(e) => { e.stopPropagation(); concludeNote(noteId) }}
                       title={isDone ? 'Concluída — clique para reabrir' : 'Concluir'}
                       className="flex shrink-0 items-center justify-center"
                       style={{
@@ -457,7 +466,7 @@ export default function TabBar() {
                 onClick={() => {
                   const id = contextMenuNoteId
                   setContextMenuNoteId(null)
-                  if (id) void toggleComplete(id)
+                  if (id) concludeNote(id)
                 }}
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12.5px] transition-colors hover:bg-zinc-800"
                 style={{ color: '#6ee7b7' }}
