@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { useCollaboratorsStore } from './collaborators-store'
-import { useNotesStore, clearNotesAuthCache } from './notes-store'
+import { useNotesStore, clearNotesAuthCache, bumpViewGeneration } from './notes-store'
 import { useOpsStore, clearOpsAuthCache } from './ops-store'
 import type { Note, Profile } from '../lib/types'
 
@@ -33,6 +33,13 @@ interface AuthState {
    * REAL (nunca viewingAs). A exclusão de nota de terceiro vai por RPC validado.
    */
   canDeleteNote: (note: Note) => boolean
+  /**
+   * True se o usuário REAL pode EDITAR o conteúdo da nota: criador, OU DONO, OU
+   * compartilhada-EDIT, OU cargo com EDITAR sobre o criador (editableIds). NÃO
+   * considera o modo "Todos" (some leitura) — o chamador combina com `!viewAll`.
+   * Regra única reusada pelo Editor (só-leitura) e pelo TabBar (dot/renomear).
+   */
+  canEditNote: (note: Note) => boolean
   /**
    * True se o usuário REAL é dono da categoria (custom_status). Dono = role DONO
    * ou a key começa com `USR_<meuIdLimpo>_`. Categorias compartilhadas comigo
@@ -125,6 +132,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     } catch {
       // ignora erros — força logout mesmo assim
     } finally {
+      bumpViewGeneration() // invalida qualquer loader em voo da sessão anterior
       set({ user: null, profile: null, isAuthenticated: false, viewingAs: null, viewAll: false, teamProfiles: [], visibleIds: null, editableIds: null })
       useCollaboratorsStore.getState().resetStore()
 
@@ -178,6 +186,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     // Sobe rascunhos pendentes ANTES de trocar de conta — senão a edição ainda
     // não sincronizada (que vive só no rascunho local) some ao resetar e recarregar.
     await useNotesStore.getState().flushPendingDrafts()
+    bumpViewGeneration() // invalida loaders em voo da conta anterior
     set({ viewingAs: profile, viewAll: false })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
@@ -195,6 +204,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
    */
   setViewAll: async (on) => {
     await useNotesStore.getState().flushPendingDrafts()
+    bumpViewGeneration() // invalida loaders em voo da visão anterior
     set({ viewAll: on, viewingAs: null })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
@@ -213,6 +223,16 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     if (get().profile?.role === 'DONO') return true        // DONO apaga de todos
     const ed = get().editableIds
     return ed != null && ed.has(note.creator_id)           // cargo com EDITAR
+  },
+
+  canEditNote: (note) => {
+    const realId = get().user?.id
+    if (!realId) return false
+    if (note.creator_id === realId) return true                          // minha nota
+    if (get().profile?.role === 'DONO') return true                       // DONO edita de todos
+    if (note.is_shared_with_me && note.shared_permission === 'EDIT') return true
+    const ed = get().editableIds
+    return ed != null && ed.has(note.creator_id)                          // cargo com EDITAR
   },
 
   isCategoryOwner: (sectionFullKey) => {

@@ -17,6 +17,46 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 let _notesToken: string | null = null
 let _deletionInProgress = false
 
+/**
+ * Geração de visão: incrementada a cada troca de conta/impersonação/logout
+ * (setViewingAs/setViewAll/signOut chamam bumpViewGeneration). Cada loader captura
+ * a geração no início e descarta o resultado se ela mudou antes do set — evita
+ * gravar notas da conta ANTIGA por cima da nova quando a troca ocorre durante os
+ * awaits (race do polling de 10s / realtime).
+ */
+let _viewGeneration = 0
+export function bumpViewGeneration(): number {
+  _viewGeneration += 1
+  return _viewGeneration
+}
+
+/**
+ * Compara dois timestamps com segurança. Os dois lados geram formatos ISO
+ * DIFERENTES: o local é `new Date().toISOString()` (3 casas de fração, sufixo `Z`)
+ * e o do PostgREST é timestamptz (6 casas, offset `+00:00`). Comparar como STRING
+ * (lexicográfico) erra quando os instantes estão próximos — e disso dependia toda a
+ * proteção "não sobrescrever o que o usuário digitou". Date.parse normaliza ambos
+ * para epoch numérico. `null`/`undefined` viram -Infinity (mais antigo possível).
+ */
+function tsMs(v: string | null | undefined): number {
+  if (!v) return -Infinity
+  const n = Date.parse(v)
+  return Number.isNaN(n) ? -Infinity : n
+}
+function tsNewer(a: string | null | undefined, b: string | null | undefined): boolean {
+  return tsMs(a) > tsMs(b)
+}
+/** Tolerância de clock-skew (ms): a task só "vence" a nota se for mais nova por esta margem. */
+const SKEW_TOLERANCE_MS = 5000
+
+/**
+ * Ids de notas com rascunho local NÃO confirmado (edição que pode ainda não ter
+ * subido). Enquanto o id está aqui, o sync da description da task NUNCA sobrescreve
+ * a nota — há edição local a proteger. Mantido em memória (síncrono) para o
+ * syncNotesFromTaskDescriptions consultar sem I/O. Reidratado por refreshPendingSync.
+ */
+const _pendingDraftIds = new Set<string>()
+
 /** Zera o token de acesso em cache. Chamado no logout para forçar re-autenticação. */
 export function clearNotesAuthCache(): void {
   _notesToken = null
@@ -211,6 +251,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const userId = authState.getEffectiveUserId()
     if (!userId) return
 
+    // Captura a geração de visão: se mudar (troca de conta) durante os awaits,
+    // descartamos o resultado antes de escrever no store.
+    const gen = _viewGeneration
+
     set({ isLoading: true })
     try {
       // Modo "Todos": carrega TODAS as notas da equipe (a RLS libera dono/gestão a
@@ -223,13 +267,16 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         const mergedAll = all.map((note) => {
           const base: Note = { ...note, priority: normalizePriority(note.priority) }
           const local = localAll.get(note.id)
-          if (local && local.updated_at > note.updated_at) {
+          if (local && tsNewer(local.updated_at, note.updated_at)) {
             base.content = local.content
             base.title = local.title
             base.updated_at = local.updated_at
           }
           return base
         })
+        // Identidade ainda é a mesma? (a troca de conta durante os awaits acima
+        // invalida este resultado — não grava notas da conta antiga.)
+        if (_viewGeneration !== gen) { set({ isLoading: false }); return }
         set({ notes: mergedAll, isLoading: false, hasLoadedOnce: true })
         return
       }
@@ -306,7 +353,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         // novo) — senão um reload (foco/realtime/polling) sobrescreveria o que o
         // usuário acabou de digitar e que ainda está no debounce de save.
         const local = localById.get(note.id)
-        if (local && local.updated_at > note.updated_at) {
+        if (local && tsNewer(local.updated_at, note.updated_at)) {
           base.content = local.content
           base.title = local.title
           base.updated_at = local.updated_at
@@ -327,6 +374,9 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         return base
       })
 
+      // Identidade ainda é a mesma? (troca de conta durante os awaits acima)
+      if (_viewGeneration !== gen) { set({ isLoading: false }); return }
+
       set({
         notes: merged,
         isLoading: false,
@@ -346,6 +396,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // No modo "Todos", loadNotes já traz TODAS as notas da equipe — nada a completar.
     if (authState.viewAll) return
 
+    const gen = _viewGeneration
     const tasks = useOpsStore.getState().tasks
     if (tasks.length === 0) return
 
@@ -381,6 +432,9 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const sharedCatPerm = shareState.sharedWithMeCategories
     const sharedNotePerm = shareState.sharedWithMeNotes
     const taskStatusById = new Map(tasks.map((t) => [t.id, t.status]))
+
+    // Troca de conta durante os fetches acima invalida este resultado.
+    if (_viewGeneration !== gen) return
 
     set((s) => {
       const byId = new Map(s.notes.map((n) => [n.id, n]))
@@ -434,22 +488,25 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const task = taskMap.get(note.task_id)
       if (!task) return note
 
-      // Puxa description/priority DA task quando: (1) ela foi editada DEPOIS da nota
-      // (ex.: alterado no Ops web), OU (2) a nota está VAZIA. Nota vazia não tem
-      // edição local a proteger — é o caso da nota de terceiro recém-carregada com
-      // content vazio enquanto a task (Ops) tem a descrição; sem isto a descrição
-      // do Ops nunca aparece. Se a nota tem texto e está igual/mais nova que a task,
-      // NÃO sobrescreve — senão apaga o que o usuário acabou de digitar. [grave]
+      // GATE DE RASCUNHO PENDENTE: se há edição local não confirmada desta nota,
+      // NUNCA puxa da task — o usuário acabou de digitar e o save pode não ter subido.
       const noteEmpty = !note.content || note.content.trim() === ''
-      const taskNewer = !!task.updated_at && task.updated_at > note.updated_at
+      if (_pendingDraftIds.has(note.id) && !noteEmpty) return note
+
+      // Puxa description/priority DA task quando: (1) ela foi editada DEPOIS da nota
+      // por uma margem real (clock-skew + formatos ISO diferentes — comparação por
+      // epoch, não string), OU (2) a nota está VAZIA. Nota vazia não tem edição local
+      // a proteger — é o caso da nota de terceiro recém-carregada com content vazio
+      // enquanto a task (Ops) tem a descrição. Se a nota tem texto e a task não é
+      // claramente mais nova, NÃO sobrescreve — senão apaga o que o usuário digitou.
+      const taskNewer = tsMs(task.updated_at) - tsMs(note.updated_at) > SKEW_TOLERANCE_MS
       if (!taskNewer && !noteEmpty) return note
 
       const taskDesc = task.description ?? ''
       const taskPriority = normalizePriority(task.priority)
       // PROTEÇÃO ANTI-APAGAMENTO: uma description VAZIA da task NUNCA apaga o
       // conteúdo da nota. A task pode estar só atrasada na sincronização (ou sem
-      // permissão de sync na categoria compartilhada) — e o clock-skew fazia o
-      // taskNewer dar true sempre, apagando o texto que o usuário acabou de digitar.
+      // permissão de sync na categoria compartilhada).
       const nextContent = (taskDesc === '' && !noteEmpty) ? (note.content ?? '') : taskDesc
       if (note.content !== nextContent || note.priority !== taskPriority) {
         hasChanges = true
@@ -637,6 +694,11 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const prev = get().notes
     const note = prev.find((n) => n.id === id)
 
+    // Modo "Todos" é somente-leitura por design (visão geral da equipe). Rede de
+    // segurança no store, independente da UI — nenhum caminho (dot de prioridade,
+    // force-save, unmount) escreve em task de terceiro nesse modo.
+    if (useAuthStore.getState().viewAll) return
+
     // Nota compartilhada comigo sem permissão de EDIÇÃO: não persistir (evita 403).
     if (note?.is_shared_with_me && note.shared_permission !== 'EDIT') {
       return
@@ -654,6 +716,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     if (updates.content !== undefined || updates.title !== undefined) {
       const merged = get().notes.find((n) => n.id === id)
       if (merged) {
+        _pendingDraftIds.add(id) // protege contra o sync da task sobrescrever
         void saveDraft(id, { content: merged.content, title: merged.title, savedAt: merged.updated_at })
       }
       void get().refreshPendingSync()
@@ -677,6 +740,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // Save na nuvem da NOTA confirmado: o rascunho local desse conteúdo já não é
     // necessário (só removemos se o conteúdo salvo ainda for o atual).
     if (updates.content !== undefined && get().notes.find((n) => n.id === id)?.content === updates.content) {
+      _pendingDraftIds.delete(id) // save confirmado: já não há edição local a proteger
       void removeDraft(id)
       void get().refreshPendingSync()
     }
@@ -734,6 +798,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         // Subiu: se ainda é o conteúdo atual, descarta o rascunho.
         const cur = get().notes.find((n) => n.id === id)
         if (cur && cur.content === draft.content && cur.title === draft.title) {
+          _pendingDraftIds.delete(id)
           void removeDraft(id)
         }
       } catch {
@@ -747,7 +812,12 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   refreshPendingSync: async () => {
     try {
       const d = await loadDrafts()
-      set({ pendingSync: Object.keys(d).length })
+      const ids = Object.keys(d)
+      // Reidrata o Set de proteção a partir da verdade local (cobre reinício do app
+      // e rascunhos restaurados): garante que o sync da task respeite edições offline.
+      _pendingDraftIds.clear()
+      for (const id of ids) _pendingDraftIds.add(id)
+      set({ pendingSync: ids.length })
     } catch {
       // silencioso — o backup local nunca pode quebrar o app
     }
@@ -759,6 +829,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
    * qualquer um com acesso (dono ou destinatário). Em erro, loga sem quebrar a UI.
    */
   completeNote: async (noteId) => {
+    if (useAuthStore.getState().viewAll) return // "Todos" é somente-leitura
     const note = get().notes.find((n) => n.id === noteId)
     const taskId = note?.task_id
     if (!taskId) {
@@ -792,6 +863,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
    *   pro dono; colaborador depende de RLS (v1: sem RPC de "desfazer").
    */
   toggleComplete: async (noteId) => {
+    if (useAuthStore.getState().viewAll) return // "Todos" é somente-leitura
     const note = get().notes.find((n) => n.id === noteId)
     const taskId = note?.task_id
     if (!taskId) return
@@ -880,22 +952,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
     _deletionInProgress = true
     try {
-      // 1. Deleta a task primeiro (se existir). Timeout 5s via fetch direto.
-      if (taskId) {
-        console.log('[notes] deleteNote: deletando task', taskId)
-        const { count, error } = await notesDelete('tasks', taskId)
-        if (error) {
-          console.error('[notes] deleteNote: erro ao deletar task:', error)
-          return
-        }
-        if (count === 0) {
-          console.error('[notes] deleteNote: task não foi deletada (0 rows) — RLS/permissão')
-          return
-        }
-        console.log(`[notes] deleteNote: task deletada (${count} rows)`)
-      }
-
-      // 2. Deleta a nota.
+      // 1. Deleta a NOTA primeiro. Ordem importa: se algo falhar entre as duas,
+      // sobra uma TASK órfã (ensureNotesForOrphanTasks recria a nota — estado
+      // recuperável) em vez de uma NOTA órfã apontando pra task inexistente (estado
+      // não recuperável que diverge do Ops). Timeout 5s via fetch direto.
       console.log('[notes] deleteNote: deletando nota', id)
       const { count: noteCount, error: noteError } = await notesDelete('notes', id)
       if (noteError) {
@@ -907,6 +967,19 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         return
       }
       console.log(`[notes] deleteNote: nota deletada (${noteCount} rows)`)
+
+      // 2. Deleta a task vinculada (se existir).
+      if (taskId) {
+        console.log('[notes] deleteNote: deletando task', taskId)
+        const { count, error } = await notesDelete('tasks', taskId)
+        if (error) {
+          console.error('[notes] deleteNote: erro ao deletar task (nota já removida):', error)
+        } else if (count === 0) {
+          console.error('[notes] deleteNote: task não deletada (0 rows) — RLS/permissão (nota já removida)')
+        } else {
+          console.log(`[notes] deleteNote: task deletada (${count} rows)`)
+        }
+      }
 
       // 3. Atualiza UI depois que o banco confirmou
       set((s) => {
@@ -1015,8 +1088,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
             const localNote = state.notes.find((n) => n.id === updated.id)
             if (!localNote) return state
 
-            // Só atualizar se o conteúdo remoto é mais recente
-            if (updated.updated_at <= localNote.updated_at) return state
+            // Só atualizar se o conteúdo remoto é mais recente (epoch, não string —
+            // os formatos ISO das duas pontas diferem) e não há edição local pendente.
+            if (_pendingDraftIds.has(updated.id)) return state
+            if (!tsNewer(updated.updated_at, localNote.updated_at)) return state
 
             return {
               notes: state.notes.map((n) =>

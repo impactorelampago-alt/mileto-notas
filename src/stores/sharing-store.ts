@@ -61,8 +61,9 @@ interface SharingState {
   /** Categorias (key COMPLETA) que OUTROS compartilharam comigo. */
   sharedWithMeCategories: Record<string, SharePermission>
   loadShares: () => Promise<void>
-  setCategoryShare: (categoryKey: string, userIds: string[]) => Promise<void>
-  setNoteShare: (noteId: string, userIds: string[], permission?: SharePermission) => Promise<void>
+  /** Retorna { error } — se o banco recusar (RLS/sem permissão), o chamador avisa. */
+  setCategoryShare: (categoryKey: string, userIds: string[]) => Promise<{ error: string | null }>
+  setNoteShare: (noteId: string, userIds: string[], permission?: SharePermission) => Promise<{ error: string | null }>
 }
 
 export const useSharingStore = create<SharingState>()((set, get) => ({
@@ -166,17 +167,18 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
     void saveLocal(NOTE_KEY, next)
 
     const uid = useAuthStore.getState().user?.id
-    if (!uid) return
-    try {
-      await supabase.from('note_shares').delete().eq('note_id', noteId).eq('shared_by', uid)
-      if (userIds.length > 0) {
-        await supabase.from('note_shares').insert(
-          userIds.map((u) => ({ note_id: noteId, shared_with: u, shared_by: uid, permission })),
-        )
-      }
-    } catch {
-      // back ainda não aplicado → permanece só no cache local
+    if (!uid) return { error: null }
+    // Erros do banco NÃO são engolidos — sem isto o front fingia sucesso quando a
+    // RLS recusava (compartilhar com quem não pode), deixando um "fantasma" só local.
+    const del = await supabase.from('note_shares').delete().eq('note_id', noteId).eq('shared_by', uid)
+    if (del.error) { console.error('[sharing] setNoteShare delete:', del.error.message); return { error: del.error.message } }
+    if (userIds.length > 0) {
+      const ins = await supabase.from('note_shares').insert(
+        userIds.map((u) => ({ note_id: noteId, shared_with: u, shared_by: uid, permission })),
+      )
+      if (ins.error) { console.error('[sharing] setNoteShare insert:', ins.error.message); return { error: ins.error.message } }
     }
+    return { error: null }
   },
 
   setCategoryShare: async (categoryKey, userIds) => {
@@ -190,16 +192,15 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
     void saveLocal(CATEGORY_KEY, next)
 
     const uid = useAuthStore.getState().user?.id
-    if (!uid) return
-    try {
-      await supabase.from('category_shares').delete().eq('category_key', categoryKey).eq('shared_by', uid)
-      if (userIds.length > 0) {
-        await supabase.from('category_shares').insert(
-          userIds.map((u) => ({ category_key: categoryKey, shared_with: u, shared_by: uid })),
-        )
-      }
-    } catch {
-      // permanece só no cache local
+    if (!uid) return { error: null }
+    const del = await supabase.from('category_shares').delete().eq('category_key', categoryKey).eq('shared_by', uid)
+    if (del.error) { console.error('[sharing] setCategoryShare delete:', del.error.message); return { error: del.error.message } }
+    if (userIds.length > 0) {
+      const ins = await supabase.from('category_shares').insert(
+        userIds.map((u) => ({ category_key: categoryKey, shared_with: u, shared_by: uid })),
+      )
+      if (ins.error) { console.error('[sharing] setCategoryShare insert:', ins.error.message); return { error: ins.error.message } }
     }
+    return { error: null }
   },
 }))

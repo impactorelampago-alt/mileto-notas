@@ -10,7 +10,7 @@ interface SharedNotesModalProps {
 }
 
 interface SharedNoteItem {
-  collaboratorId: string
+  shareId: string
   permission: NotePermission
   note: { id: string; title: string; updated_at: string; creator_id: string }
   creator: { id: string; name: string | null; email: string } | undefined
@@ -51,18 +51,20 @@ export default function SharedNotesModal({ onClose, onOpenNote }: SharedNotesMod
     const load = async () => {
       setIsLoading(true)
 
-      const { data: collabs, error: collabError } = await supabase
-        .from('note_collaborators')
-        .select('id, permission, note_id, added_by')
-        .eq('user_id', currentUserId)
+      // Sistema REAL de compartilhamento: note_shares (não a tabela legada
+      // note_collaborators). "Compartilhadas comigo" = shared_with = eu.
+      const { data: shares, error: sharesError } = await supabase
+        .from('note_shares')
+        .select('note_id, permission')
+        .eq('shared_with', currentUserId)
 
-      if (collabError || !collabs || collabs.length === 0) {
+      if (sharesError || !shares || shares.length === 0) {
         setItems([])
         setIsLoading(false)
         return
       }
 
-      const noteIds = collabs.map((c) => c.note_id)
+      const noteIds = [...new Set(shares.map((c) => c.note_id as string))]
       const { data: sharedNotes } = await supabase
         .from('notes')
         .select('id, title, updated_at, creator_id')
@@ -74,13 +76,13 @@ export default function SharedNotesModal({ onClose, onOpenNote }: SharedNotesMod
         .select('id, name, email')
         .in('id', creatorIds)
 
-      const list: SharedNoteItem[] = collabs
+      const list: SharedNoteItem[] = shares
         .map((c) => {
           const note = sharedNotes?.find((n) => n.id === c.note_id)
           if (!note) return null
           return {
-            collaboratorId: c.id,
-            permission: c.permission as NotePermission,
+            shareId: c.note_id as string,
+            permission: (c.permission === 'VIEW' ? 'VIEW' : 'EDIT') as NotePermission,
             note,
             creator: creators?.find((p) => p.id === note.creator_id),
           }
@@ -144,7 +146,7 @@ export default function SharedNotesModal({ onClose, onOpenNote }: SharedNotesMod
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               {items.map((item) => (
                 <div
-                  key={item.collaboratorId}
+                  key={item.shareId}
                   className="flex items-start gap-3"
                   style={{ padding: '10px 12px', borderRadius: '8px' }}
                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#252526' }}

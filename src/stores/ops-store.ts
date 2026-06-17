@@ -246,6 +246,7 @@ type OpsState = OpsDomainState & OpsUIState & OpsActions & {
 // ─── Module‑level bookkeeping (never causes React re‑renders) ─────────────────
 
 let _refreshTimer: ReturnType<typeof setTimeout> | null = null
+let _retryTimer: ReturnType<typeof setTimeout> | null = null
 let _isRefreshing = false
 let _pendingRefresh = false
 
@@ -313,6 +314,11 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       }
       const cleanedUserId = currentUserId.replace(/-/g, '')
       const viewAll = useAuthStore.getState().viewAll
+      // Identidade efetiva no INÍCIO — revalidada antes do set final. Se o usuário
+      // trocar de conta/impersonação durante os fetches, NÃO gravamos as tasks/seções
+      // da conta antiga por cima do estado recém-limpo da nova.
+      const reqViewingId = useAuthStore.getState().viewingAs?.id ?? null
+      const reqViewAll = viewAll
 
       // Compartilhado-comigo só aplica fora de impersonação E fora do modo "Todos"
       // (no "Todos" já trazemos o board inteiro da equipe, sem precisar do extra).
@@ -459,6 +465,15 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         ...task,
         priority: normalizePriority(task.priority),
       })) as OpsTask[]
+
+      // Troca de conta/visão durante os fetches invalida este snapshot.
+      const authNow = useAuthStore.getState()
+      if ((authNow.viewingAs?.id ?? null) !== reqViewingId || authNow.viewAll !== reqViewAll) {
+        console.log('[ops-sync] Snapshot descartado: a conta/visão mudou durante o refresh.')
+        set({ isSyncing: false })
+        _isRefreshing = false
+        return
+      }
 
       const currentActive = get().activeSectionId
       const stillExists =
@@ -621,7 +636,20 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       return { success: false, error: 'Não é possível excluir seções pré-definidas' }
     }
 
-    const fullKey = buildStatusKey(userId, keySuffix)
+    // Modo "Todos" é só leitura — nunca apaga em massa tasks/notas da equipe.
+    if (useAuthStore.getState().viewAll) {
+      return { success: false, error: 'Modo "Todos" é somente leitura' }
+    }
+
+    // Usa a KEY COMPLETA da seção exibida (não reconstrói por user.id) — em
+    // impersonação/visão a seção pode ser de outro dono, e reconstruir pela minha
+    // key apagaria a coluna errada (ou tasks de terceiros, sendo DONO/RLS liberada).
+    const sec = get().sections.find((s) => s.key_suffix === keySuffix)
+    if (!sec) return { success: false, error: 'Seção não encontrada' }
+    if (sec.shared) {
+      return { success: false, error: 'Não é possível excluir uma categoria compartilhada por outra pessoa' }
+    }
+    const fullKey = sec.key
 
     // 1. Tasks do usuário nessa seção
     const tasksInSection = get().tasks.filter(
@@ -761,9 +789,14 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     // nota compartilhada aparecer NA HORA pro destinatário (sem reabrir o app).
     // O Realtime respeita RLS, então só chegam as linhas que o usuário pode ver.
     const reconcileShares = () => {
+      // Encadeado (não paralelo): shares → snapshot (que popula tasks + chama
+      // loadNotesForVisibleTasks) → loadNotes. Rodar loadNotes DEPOIS do snapshot
+      // garante que a reconstrução por creator/share encontre as tasks/notas de
+      // terceiro já carregadas (bloco de preservação) — sem o piscar de antes.
       void useSharingStore.getState().loadShares().then(() => {
-        void get().refreshOpsSnapshot('realtime:shares')
-        void useNotesStore.getState().loadNotes()
+        void get().refreshOpsSnapshot('realtime:shares').then(() => {
+          void useNotesStore.getState().loadNotes()
+        })
       })
     }
 
@@ -799,8 +832,14 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         }
         if (status === 'CHANNEL_ERROR') {
           console.error('[ops-sync] Realtime channel error — retrying in 5 s')
-          setTimeout(() => {
-            get().subscribeToOpsChanges()
+          // Rastreia o retry (1 só por vez) e só re-subscreve se ainda autenticado —
+          // senão um retry pendente recriaria um canal órfão após logout/unmount.
+          if (_retryTimer) clearTimeout(_retryTimer)
+          _retryTimer = setTimeout(() => {
+            _retryTimer = null
+            if (useAuthStore.getState().isAuthenticated) {
+              get().subscribeToOpsChanges()
+            }
           }, 5000)
         }
       })
@@ -815,6 +854,10 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     if (_refreshTimer) {
       clearTimeout(_refreshTimer)
       _refreshTimer = null
+    }
+    if (_retryTimer) {
+      clearTimeout(_retryTimer)
+      _retryTimer = null
     }
 
     const channel = get().realtimeChannel
@@ -836,8 +879,9 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         void useSharingStore.getState().loadShares().then(() => {
-          void get().refreshOpsSnapshot('window-focus')
-          void useNotesStore.getState().loadNotes()
+          void get().refreshOpsSnapshot('window-focus').then(() => {
+            void useNotesStore.getState().loadNotes()
+          })
         })
       }
     }

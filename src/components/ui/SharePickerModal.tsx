@@ -29,6 +29,8 @@ export default function SharePickerModal({ kind, id, label, onClose }: Props) {
   const [query, setQuery] = useState('')
   // Permissão escolhida ao compartilhar uma NOTA (categoria é sempre EDIT por ora).
   const [permission, setPermission] = useState<NotePermission>('EDIT')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -53,9 +55,18 @@ export default function SharePickerModal({ kind, id, label, onClose }: Props) {
   }
 
   const handleConfirm = async () => {
+    if (saving) return
+    setSaving(true)
+    setError(null)
     const ids = Array.from(selected)
-    if (kind === 'category') await setCategoryShare(id, ids)
-    else await setNoteShare(id, ids, permission)
+    const res = kind === 'category'
+      ? await setCategoryShare(id, ids)
+      : await setNoteShare(id, ids, permission)
+    setSaving(false)
+    if (res.error) {
+      setError('Não foi possível salvar o compartilhamento. Verifique se você tem permissão para compartilhar com essas pessoas.')
+      return
+    }
     onClose()
   }
 
@@ -168,6 +179,10 @@ export default function SharePickerModal({ kind, id, label, onClose }: Props) {
           </div>
         )}
 
+        {error && (
+          <div style={{ padding: '0 18px 4px', fontSize: 12, color: '#fca5a5' }}>{error}</div>
+        )}
+
         <div className="flex items-center justify-between" style={{ padding: '12px 18px', borderTop: '1px solid #2a2a2a' }}>
           <span style={{ fontSize: 12, color: '#8a8a92' }}>
             {selected.size} selecionad{selected.size === 1 ? 'o' : 'os'}
@@ -176,8 +191,8 @@ export default function SharePickerModal({ kind, id, label, onClose }: Props) {
             <button onClick={onClose} className="rounded-md text-[13px] text-zinc-400 transition-colors hover:text-zinc-200" style={{ height: 32, padding: '0 14px' }}>
               Cancelar
             </button>
-            <button onClick={() => void handleConfirm()} className="rounded-md text-[13px] font-medium text-white transition-colors" style={{ height: 32, padding: '0 16px', backgroundColor: '#10b981' }}>
-              Compartilhar
+            <button onClick={() => void handleConfirm()} disabled={saving} className="rounded-md text-[13px] font-medium text-white transition-colors" style={{ height: 32, padding: '0 16px', backgroundColor: '#10b981', opacity: saving ? 0.6 : 1 }}>
+              {saving ? 'Salvando…' : 'Compartilhar'}
             </button>
           </div>
         </div>

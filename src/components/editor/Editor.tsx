@@ -12,9 +12,9 @@ export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
   const viewAll = useAuthStore((s) => s.viewAll)
-  const editableIds = useAuthStore((s) => s.editableIds)
-  const realUserId = useAuthStore((s) => s.user?.id)
-  const myRole = useAuthStore((s) => s.profile?.role)
+  // Re-renderiza quando os conjuntos de permissão chegam (canEditNote os lê).
+  useAuthStore((s) => s.editableIds)
+  const canEditNote = useAuthStore((s) => s.canEditNote)
   const { fontSize, showLineNumbers, wordWrap, setCursor, setSaveState } = useUIStore()
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
@@ -33,16 +33,13 @@ export default function Editor() {
 
   const lineHeight = fontSize * 1.6
 
-  // Posso EDITAR esta nota? Própria, ou DONO, ou compartilhada-EDIT, ou cargo com
-  // EDITAR sobre o criador (núcleo). Senão é só leitura — cobre impersonar alguém
-  // que você só pode VER e o modo "Todos".
-  const canEdit =
-    !activeNote ? false
-    : activeNote.creator_id === realUserId ? true
-    : myRole === 'DONO' ? true
-    : (!!activeNote.is_shared_with_me && activeNote.shared_permission === 'EDIT') ? true
-    : (editableIds != null && editableIds.has(activeNote.creator_id))
-  const isReadOnly = viewAll || (!!activeNote && !canEdit)
+  // Posso EDITAR esta nota? Regra única em auth-store.canEditNote (própria/DONO/
+  // compartilhada-EDIT/cargo com EDITAR). Modo "Todos" é sempre só-leitura. Cobre
+  // impersonar alguém que você só pode VER.
+  const isReadOnly = viewAll || (!!activeNote && !canEditNote(activeNote))
+  // Ref p/ os handlers de deps vazias (unmount/force-save) lerem o estado atual.
+  const isReadOnlyRef = useRef(isReadOnly)
+  isReadOnlyRef.current = isReadOnly
 
   useEffect(() => {
     // ANTES de trocar de nota, salva o que foi digitado na nota ANTERIOR — a
@@ -98,6 +95,7 @@ export default function Editor() {
         clearTimeout(debounceRef.current)
         debounceRef.current = null
       }
+      if (isReadOnlyRef.current) return // só-leitura: nada a salvar
       const id = activeNoteIdRef.current
       const content = localContentRef.current
       if (id && content !== undefined) {
@@ -118,6 +116,7 @@ export default function Editor() {
         clearTimeout(debounceRef.current)
         debounceRef.current = null
       }
+      if (isReadOnlyRef.current) return // só-leitura: nada a salvar
       const id = activeNoteIdRef.current
       if (!id) return
       void updateNote(id, { content: localContentRef.current })

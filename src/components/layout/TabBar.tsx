@@ -43,6 +43,8 @@ export default function TabBar() {
   const tasks = useOpsStore((s) => s.tasks)
   const signOut = useAuthStore((s) => s.signOut)
   const canDeleteNote = useAuthStore((s) => s.canDeleteNote)
+  const canEditNote = useAuthStore((s) => s.canEditNote)
+  useAuthStore((s) => s.editableIds) // re-render quando os conjuntos de permissão chegam
   const viewAll = useAuthStore((s) => s.viewAll)
   const noteShares = useSharingStore((s) => s.noteShares)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
@@ -203,12 +205,15 @@ export default function TabBar() {
               const noteTask = tasks.find((t) => t.id === note.task_id)
               const isDone = noteTask ? isDoneStatus(noteTask.status) : false
               const canComplete = !viewAll && !!note.task_id && !(note.is_shared_with_me && note.shared_permission !== 'EDIT')
+              // Posso editar esta nota? (mesma regra do Editor) — gateia o dot de
+              // prioridade e o renomear, que escrevem na task/nota de terceiros.
+              const editable = !viewAll && canEditNote(note)
 
               return (
                 <div
                   key={noteId}
                   onClick={() => { openTab(noteId); setActiveTab(noteId) }}
-                  onDoubleClick={() => startRename(noteId, note.title)}
+                  onDoubleClick={() => { if (editable) startRename(noteId, note.title) }}
                   onMouseEnter={() => setHoveredTab(noteId)}
                   onMouseLeave={() => setHoveredTab(null)}
                   onContextMenu={(e) => {
@@ -252,14 +257,15 @@ export default function TabBar() {
                   )}
 
                   <motion.span
-                    whileTap={{ scale: 1.3 }}
+                    whileTap={editable ? { scale: 1.3 } : undefined}
                     onClick={(e) => {
                       e.stopPropagation()
+                      if (!editable) return // só indicador visual quando não posso editar
                       const r = e.currentTarget.getBoundingClientRect()
                       setPriorityMenu({ noteId, x: r.left - 6, y: r.bottom + 8 })
                     }}
-                    title={`Urgência: ${NOTE_PRIORITY_LABELS[priority]} (clique para trocar)`}
-                    style={{ width: 9, height: 9, borderRadius: 999, backgroundColor: priorityColors.dot, flexShrink: 0, cursor: 'pointer' }}
+                    title={editable ? `Urgência: ${NOTE_PRIORITY_LABELS[priority]} (clique para trocar)` : `Urgência: ${NOTE_PRIORITY_LABELS[priority]}`}
+                    style={{ width: 9, height: 9, borderRadius: 999, backgroundColor: priorityColors.dot, flexShrink: 0, cursor: editable ? 'pointer' : 'default' }}
                   />
 
                   {note.is_pinned && <Pin size={10} style={{ color: '#10b981', flexShrink: 0 }} />}
@@ -428,7 +434,7 @@ export default function TabBar() {
         const ctxNote = notes.find((n) => n.id === contextMenuNoteId)
         if (!ctxNote) return null
         const ownsNote = canDeleteNote(ctxNote)
-        const canRename = ownsNote || ctxNote.shared_permission === 'EDIT'
+        const canRename = canEditNote(ctxNote)
         const canShare = ownsNote
         const canComplete = !!ctxNote.task_id && !(ctxNote.is_shared_with_me && ctxNote.shared_permission !== 'EDIT')
         const ctxTask = tasks.find((t) => t.id === ctxNote.task_id)
