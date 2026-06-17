@@ -311,7 +311,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           base.title = local.title
           base.updated_at = local.updated_at
         }
-        if (!notImpersonating && note.creator_id !== userId) {
+        if (notImpersonating && note.creator_id !== userId) {
           // Sou destinatário desta nota — anexa flags de compartilhamento.
           let perm: NotePermission | undefined = sharedNotePerm[note.id]
           if (!perm && note.task_id) {

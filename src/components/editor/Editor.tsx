@@ -55,7 +55,7 @@ export default function Editor() {
       // não vira a primeira linha em troca rápida.
       const c = localContentRef.current
       const prevNote = useNotesStore.getState().notes.find((n) => n.id === prevId)
-      const semTitulo = !prevNote?.title || prevNote.title.trim() === '' || prevNote.title === 'Sem título'
+      const semTitulo = !prevNote?.title || prevNote.title.trim() === '' || prevNote.title === 'Sem título' || prevNote.title === 'Sem titulo' || prevNote.title === 'Nova nota'
       const firstLine = c.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
       // Salva o conteúdo sempre; o título só se a nota ainda não tiver um (regra sticky).
       void useNotesStore.getState().updateNote(prevId, semTitulo
@@ -166,7 +166,7 @@ export default function Editor() {
         const id = activeNoteIdRef.current
         if (!id) return
         const cur = useNotesStore.getState().notes.find((n) => n.id === id)
-        const semTitulo = !cur?.title || cur.title.trim() === '' || cur.title === 'Sem título'
+        const semTitulo = !cur?.title || cur.title.trim() === '' || cur.title === 'Sem título' || cur.title === 'Sem titulo' || cur.title === 'Nova nota'
         if (!semTitulo) return
         const firstLine = newContent.split('\n').find((l) => l.trim() !== '')?.trim() ?? ''
         void updateNote(id, { title: firstLine.slice(0, 60) || 'Sem título' })
