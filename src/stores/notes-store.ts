@@ -694,13 +694,17 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const prev = get().notes
     const note = prev.find((n) => n.id === id)
 
-    // Modo "Todos" é somente-leitura por design (visão geral da equipe). Rede de
-    // segurança no store, independente da UI — nenhum caminho (dot de prioridade,
-    // force-save, unmount) escreve em task de terceiro nesse modo.
-    if (useAuthStore.getState().viewAll) return
+    // DONO tem controle total — edita tarefa de qualquer um (a RLS permite). Os
+    // gates abaixo (Todos só-leitura / compartilhada sem EDIT) NÃO se aplicam a ele.
+    const isDono = useAuthStore.getState().isDono()
+
+    // Modo "Todos" é somente-leitura por design (visão geral da equipe), EXCETO pro
+    // DONO. Rede de segurança no store, independente da UI.
+    if (!isDono && useAuthStore.getState().viewAll) return
 
     // Nota compartilhada comigo sem permissão de EDIÇÃO: não persistir (evita 403).
-    if (note?.is_shared_with_me && note.shared_permission !== 'EDIT') {
+    // O DONO não passa por aqui (edita tudo).
+    if (!isDono && note?.is_shared_with_me && note.shared_permission !== 'EDIT') {
       return
     }
 
@@ -803,10 +807,11 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const ids = Object.keys(drafts)
     if (ids.length === 0) return
 
+    const isDono = useAuthStore.getState().isDono() // DONO sobe rascunho de qualquer nota
     for (const id of ids) {
       const note = get().notes.find((n) => n.id === id)
       if (!note) continue // nota não carregada nesta sessão — pula
-      if (note.is_shared_with_me && note.shared_permission !== 'EDIT') continue
+      if (!isDono && note.is_shared_with_me && note.shared_permission !== 'EDIT') continue
       const draft = drafts[id]
       try {
         await notesPatch('notes', id, { content: draft.content, title: draft.title })

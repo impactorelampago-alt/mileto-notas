@@ -15,6 +15,7 @@ export default function Editor() {
   // Re-renderiza quando os conjuntos de permissão chegam (canEditNote os lê).
   useAuthStore((s) => s.editableIds)
   const canEditNote = useAuthStore((s) => s.canEditNote)
+  const isDono = useAuthStore((s) => s.isDono())
   const { fontSize, showLineNumbers, wordWrap, setCursor, setSaveState } = useUIStore()
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
@@ -33,9 +34,9 @@ export default function Editor() {
   const lineHeight = fontSize * 1.6
 
   // Posso EDITAR esta nota? Regra única em auth-store.canEditNote (própria/DONO/
-  // compartilhada-EDIT/cargo com EDITAR). Modo "Todos" é sempre só-leitura. Cobre
-  // impersonar alguém que você só pode VER.
-  const isReadOnly = viewAll || (!!activeNote && !canEditNote(activeNote))
+  // compartilhada-EDIT/cargo com EDITAR). Modo "Todos" é só-leitura — EXCETO pro
+  // DONO (controle total). Cobre impersonar alguém que você só pode VER.
+  const isReadOnly = !isDono && (viewAll || (!!activeNote && !canEditNote(activeNote)))
   // Ref p/ os handlers de deps vazias (unmount/force-save) lerem o estado atual.
   const isReadOnlyRef = useRef(isReadOnly)
   isReadOnlyRef.current = isReadOnly

@@ -32,6 +32,7 @@ export default function NoteDetailBar() {
   const updateTaskFields = useOpsStore((s) => s.updateTaskFields)
   const setActiveSectionId = useOpsStore((s) => s.setActiveSectionId)
   const viewAll = useAuthStore((s) => s.viewAll)
+  const isDono = useAuthStore((s) => s.isDono())
 
   const [pop, setPop] = useState<Pop>(null)
   const [clientSearch, setClientSearch] = useState('')
@@ -53,7 +54,8 @@ export default function NoteDetailBar() {
 
   if (!activeNote) return null
 
-  const readOnly = viewAll || (!!activeNote.is_shared_with_me && activeNote.shared_permission !== 'EDIT')
+  // DONO tem controle total (prioridade/cliente/status de qualquer tarefa).
+  const readOnly = !isDono && (viewAll || (!!activeNote.is_shared_with_me && activeNote.shared_permission !== 'EDIT'))
   const priority = normalizePriority(activeNote.priority)
   const pColors = NOTE_PRIORITY_COLORS[priority]
   const done = task ? isDoneStatus(task.status) : false

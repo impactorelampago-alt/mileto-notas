@@ -28,6 +28,8 @@ interface AuthState {
   setViewAll: (on: boolean) => Promise<void>
   /** ID do usuário cujas notas/tasks devem ser carregadas (impersonação ou próprio). */
   getEffectiveUserId: () => string | undefined
+  /** True se o usuário REAL logado é o DONO (role DONO) — tem controle total. */
+  isDono: () => boolean
   /**
    * True se o usuário REAL pode EXCLUIR a nota: é o criador, OU é DONO, OU tem
    * cargo com EDITAR sobre o criador (editableIds). Sempre avalia pelo usuário
@@ -222,6 +224,12 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   getEffectiveUserId: () => get().viewingAs?.id ?? get().user?.id,
+
+  // DONO tem controle total: edita/conclui tarefas de qualquer usuário (perfil,
+  // "Todos" ou compartilhada). A RLS já permite (notes_update_nucleo dá ao DONO
+  // todos os criadores; tasks "Enable update for hierarchy" libera DONO). Os gates
+  // de viewAll/shared no front passam a exemptar o DONO via este helper.
+  isDono: () => get().profile?.role === 'DONO',
 
   canDeleteNote: (note) => {
     const realId = get().user?.id

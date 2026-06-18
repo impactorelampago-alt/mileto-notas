@@ -46,6 +46,7 @@ export default function TabBar() {
   const canEditNote = useAuthStore((s) => s.canEditNote)
   useAuthStore((s) => s.editableIds) // re-render quando os conjuntos de permissão chegam
   const viewAll = useAuthStore((s) => s.viewAll)
+  const isDono = useAuthStore((s) => s.isDono())
   const noteShares = useSharingStore((s) => s.noteShares)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
 
@@ -216,7 +217,8 @@ export default function TabBar() {
               const canComplete = !viewAll && !!note.task_id && !(note.is_shared_with_me && note.shared_permission !== 'EDIT')
               // Posso editar esta nota? (mesma regra do Editor) — gateia o dot de
               // prioridade e o renomear, que escrevem na task/nota de terceiros.
-              const editable = !viewAll && canEditNote(note)
+              // DONO tem controle total (edita em qualquer modo, inclusive "Todos").
+              const editable = isDono || (!viewAll && canEditNote(note))
 
               return (
                 <div
