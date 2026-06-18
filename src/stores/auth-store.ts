@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { useCollaboratorsStore } from './collaborators-store'
 import { useNotesStore, clearNotesAuthCache, bumpViewGeneration } from './notes-store'
 import { useOpsStore, clearOpsAuthCache } from './ops-store'
+import { useSharingStore } from './sharing-store'
 import type { Note, Profile } from '../lib/types'
 
 interface AuthState {
@@ -190,6 +191,9 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     set({ viewingAs: profile, viewAll: false })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
+    // Carrega os shares do usuário EFETIVO (viewingAs) ANTES do snapshot — senão as
+    // categorias compartilhadas COM a conta visualizada não entram na visão impersonada.
+    await useSharingStore.getState().loadShares()
     await Promise.all([
       useNotesStore.getState().loadNotes(),
       useOpsStore.getState().refreshOpsSnapshot('view-switch'),
@@ -208,6 +212,9 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     set({ viewAll: on, viewingAs: null })
     useNotesStore.setState({ notes: [], openTabs: [], activeTabId: null, hasLoadedOnce: false })
     useOpsStore.setState({ tasks: [], sections: [] })
+    // Recarrega os shares no contexto atual (evita mapa obsoleto de uma impersonação
+    // anterior vazar ao voltar pra própria conta). Inerte no "Todos" (includeShared=false).
+    await useSharingStore.getState().loadShares()
     await Promise.all([
       useNotesStore.getState().loadNotes(),
       useOpsStore.getState().refreshOpsSnapshot('view-all-toggle'),

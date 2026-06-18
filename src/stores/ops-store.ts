@@ -323,10 +323,12 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       const reqViewingId = useAuthStore.getState().viewingAs?.id ?? null
       const reqViewAll = viewAll
 
-      // Compartilhado-comigo só aplica fora de impersonação E fora do modo "Todos"
-      // (no "Todos" já trazemos o board inteiro da equipe, sem precisar do extra).
-      const notImpersonating = useAuthStore.getState().viewingAs == null
-      const includeShared = notImpersonating && !viewAll
+      // Categorias/notas compartilhadas: aplica fora do modo "Todos" (no "Todos" já
+      // trazemos o board inteiro da equipe). INCLUI impersonação: o dono vendo a
+      // conta de um usuário precisa ver as categorias compartilhadas COM esse
+      // usuário (ex.: tarefa numa categoria que o dono compartilhou com ele). O
+      // sharedWithMeCategories é carregado pelo usuário EFETIVO (viewingAs) no loadShares.
+      const includeShared = !viewAll
       const sharedCatMap = includeShared
         ? useSharingStore.getState().sharedWithMeCategories
         : {}

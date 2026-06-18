@@ -79,9 +79,10 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
     const sharedWithMeNotes: Record<string, SharePermission> = {}
     const sharedWithMeCategories: Record<string, SharePermission> = {}
 
-    // Compartilhado-comigo só vale no contexto da própria conta. Em impersonação
-    // (viewingAs), o contexto é da conta visualizada — não mesclar meus shares.
-    const isImpersonating = useAuthStore.getState().viewingAs != null
+    // "Compartilhado comigo" vale no contexto da conta EFETIVA: fora de impersonação
+    // é o próprio usuário; impersonando, é a conta visualizada (viewingAs). Assim o
+    // dono vê as categorias/notas compartilhadas COM o usuário que está visualizando.
+    const effectiveUid = useAuthStore.getState().getEffectiveUserId()
 
     if (uid) {
       // note_shares (best-effort: se a tabela não existir, error vem preenchido → fallback)
@@ -111,14 +112,17 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
         // fallback local
       }
 
-      // ── Compartilhado COMIGO ────────────────────────────────────────────
-      if (!isImpersonating) {
-        // notas que outros compartilharam comigo
+      // ── Compartilhado COM O USUÁRIO EFETIVO ─────────────────────────────
+      // Impersonando, busca o que foi compartilhado com a conta visualizada. A RLS
+      // (category_shares/note_shares: shared_by=auth.uid() OR shared_with=auth.uid())
+      // permite ao dono ler essas rows porque foi ELE quem compartilhou (shared_by).
+      if (effectiveUid) {
+        // notas compartilhadas com o usuário efetivo
         try {
           const { data, error } = await supabase
             .from('note_shares')
             .select('note_id, permission')
-            .eq('shared_with', uid)
+            .eq('shared_with', effectiveUid)
           if (!error && data) {
             const rows = data as { note_id: string; permission: SharePermission | null }[]
             for (const r of rows) {
@@ -128,12 +132,12 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
         } catch {
           // back ainda não aplicado
         }
-        // categorias que outros compartilharam comigo (sem coluna permission ainda → EDIT)
+        // categorias compartilhadas com o usuário efetivo (sem coluna permission ainda → EDIT)
         try {
           const { data, error } = await supabase
             .from('category_shares')
             .select('category_key')
-            .eq('shared_with', uid)
+            .eq('shared_with', effectiveUid)
           if (!error && data) {
             const rows = data as { category_key: string }[]
             for (const r of rows) {
