@@ -489,9 +489,12 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       if (!task) return note
 
       // GATE DE RASCUNHO PENDENTE: se há edição local não confirmada desta nota,
-      // NUNCA puxa da task — o usuário acabou de digitar e o save pode não ter subido.
+      // NUNCA puxa da task (vazia ou não). Inclui ESVAZIAR a nota (apagar tudo) —
+      // edição local pendente — senão o sync ressuscitaria a description antiga e
+      // (com o persist abaixo) gravaria de volta no banco compartilhado. O
+      // preenchimento legítimo de nota recém-carregada não tem rascunho pendente.
       const noteEmpty = !note.content || note.content.trim() === ''
-      if (_pendingDraftIds.has(note.id) && !noteEmpty) return note
+      if (_pendingDraftIds.has(note.id)) return note
 
       // Puxa description/priority DA task quando: (1) ela foi editada DEPOIS da nota
       // por uma margem real (clock-skew + formatos ISO diferentes — comparação por
@@ -510,6 +513,13 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const nextContent = (taskDesc === '' && !noteEmpty) ? (note.content ?? '') : taskDesc
       if (note.content !== nextContent || note.priority !== taskPriority) {
         hasChanges = true
+        // Preencheu uma nota VAZIA com a descrição da task → PERSISTE no banco.
+        // Sem isto, o sync fica só na tela e o loadNotes recarrega o vazio por
+        // cima (o texto "some mesmo sincronizando" — caso da categoria "Salvos").
+        // Só quando posso editar a nota (evita 403 em compartilhada-VIEW).
+        if (noteEmpty && nextContent !== '' && useAuthStore.getState().canEditNote(note)) {
+          void notesPatch('notes', note.id, { content: nextContent }).catch(() => {})
+        }
         return { ...note, content: nextContent, priority: taskPriority, updated_at: (task.updated_at ?? note.updated_at) }
       }
       return note

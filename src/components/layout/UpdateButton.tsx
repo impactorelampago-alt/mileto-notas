@@ -1,4 +1,4 @@
-import { DownloadCloud, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Download, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { useUpdateStore } from '../../stores/update-store'
 
 /**
@@ -62,7 +62,7 @@ export default function UpdateButton() {
     }
     if (status === 'uptodate') return <CheckCircle2 size={15} />
     if (status === 'error') return <AlertTriangle size={15} />
-    return <DownloadCloud size={15} className={status === 'available' ? 'animate-pulse' : undefined} />
+    return <Download size={15} className={status === 'available' ? 'animate-pulse' : undefined} />
   }
 
   return (

@@ -41,6 +41,7 @@ export default function TabBar() {
   const sections = useOpsStore((s) => s.sections)
   const activeSectionId = useOpsStore((s) => s.activeSectionId)
   const tasks = useOpsStore((s) => s.tasks)
+  const reorderTasksInSection = useOpsStore((s) => s.reorderTasksInSection)
   const signOut = useAuthStore((s) => s.signOut)
   const canDeleteNote = useAuthStore((s) => s.canDeleteNote)
   const canEditNote = useAuthStore((s) => s.canEditNote)
@@ -57,6 +58,8 @@ export default function TabBar() {
   const [contextMenuNoteId, setContextMenuNoteId] = useState<string | null>(null)
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
   const [priorityMenu, setPriorityMenu] = useState<{ noteId: string; x: number; y: number } | null>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
 
   const renameInputRef = useRef<HTMLInputElement>(null)
 
@@ -129,15 +132,50 @@ export default function TabBar() {
     [sectionGroups, activeSectionId],
   )
 
-  // Ordena as abas por criacao crescente: nota nova entra a DIREITA, antigas a esquerda.
+  // Ordena as abas pela `position` da task (MESMA ordem do board do Ops),
+  // desempatando por data de criação. Arrastar uma aba reordena (grava `position`).
   const orderedNoteIds = useMemo(() => {
     if (!activeGroup) return []
+    const taskPos = new Map(tasks.map((t) => [t.id, t.position ?? 0]))
+    const noteById = new Map(notes.map((n) => [n.id, n]))
     return [...activeGroup.noteIds].sort((a, b) => {
-      const ca = notes.find((n) => n.id === a)?.created_at ?? ''
-      const cb = notes.find((n) => n.id === b)?.created_at ?? ''
+      const na = noteById.get(a)
+      const nb = noteById.get(b)
+      const pa = na?.task_id ? (taskPos.get(na.task_id) ?? 0) : 0
+      const pb = nb?.task_id ? (taskPos.get(nb.task_id) ?? 0) : 0
+      if (pa !== pb) return pa - pb
+      const ca = na?.created_at ?? ''
+      const cb = nb?.created_at ?? ''
       return ca < cb ? -1 : ca > cb ? 1 : 0
     })
-  }, [activeGroup, notes])
+  }, [activeGroup, notes, tasks])
+
+  // Arrastar abas reordena a seção: monta a nova ordem de notes → taskIds e grava
+  // `position` (reflete no board do Ops). Só fora do modo "Todos".
+  const canReorder = !viewAll
+  const handleTabDrop = (targetNoteId: string) => {
+    const src = draggingId
+    setDraggingId(null)
+    setDragOverId(null)
+    if (!src || src === targetNoteId || !canReorder) return
+    const ids = [...orderedNoteIds]
+    const from = ids.indexOf(src)
+    const to = ids.indexOf(targetNoteId)
+    if (from < 0 || to < 0) return
+    ids.splice(from, 1)
+    ids.splice(to, 0, src)
+    // Reordena SÓ as tasks do MESMO status REAL da aba arrastada — a `position` é
+    // por coluna no Ops; não pode cruzar com concluídas (status DONE remapeado pra
+    // categoria de origem) nem com tasks de outro dono que caem na mesma seção.
+    const srcNote = notes.find((n) => n.id === src)
+    const srcTask = srcNote?.task_id ? tasks.find((t) => t.id === srcNote.task_id) : null
+    if (!srcTask) return
+    const taskIds = ids
+      .map((nid) => notes.find((n) => n.id === nid)?.task_id)
+      .filter((tid): tid is string => !!tid)
+      .filter((tid) => tasks.find((t) => t.id === tid)?.status === srcTask.status)
+    if (taskIds.length > 1) void reorderTasksInSection(taskIds)
+  }
 
   const startRename = (noteId: string, currentTitle: string) => {
     setRenamingNoteId(noteId)
@@ -234,6 +272,22 @@ export default function TabBar() {
                     setContextMenuPos({ x: e.clientX, y: e.clientY })
                     setContextMenuNoteId(noteId)
                   }}
+                  draggable={canReorder && editable && renamingNoteId !== noteId}
+                  onDragStart={(e) => {
+                    if (!canReorder || !editable) { e.preventDefault(); return }
+                    setDraggingId(noteId)
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.dataTransfer.setData('text/plain', noteId)
+                  }}
+                  onDragOver={(e) => {
+                    if (canReorder && draggingId && draggingId !== noteId) {
+                      e.preventDefault()
+                      if (dragOverId !== noteId) setDragOverId(noteId)
+                    }
+                  }}
+                  onDragLeave={() => setDragOverId((cur) => (cur === noteId ? null : cur))}
+                  onDrop={(e) => { e.preventDefault(); handleTabDrop(noteId) }}
+                  onDragEnd={() => { setDraggingId(null); setDragOverId(null) }}
                   className="relative flex items-center"
                   style={{
                     gap: 8,
@@ -245,8 +299,9 @@ export default function TabBar() {
                     borderRight: isActive ? '1px solid transparent' : '1px solid #2a2a2a',
                     borderTopLeftRadius: 8,
                     borderTopRightRadius: 8,
-                    boxShadow: isActive ? '0 -1px 4px rgba(0,0,0,0.2)' : 'none',
-                    transition: 'background-color 140ms',
+                    opacity: draggingId === noteId ? 0.4 : 1,
+                    boxShadow: dragOverId === noteId ? 'inset 2px 0 0 #10b981' : isActive ? '0 -1px 4px rgba(0,0,0,0.2)' : 'none',
+                    transition: 'background-color 140ms, opacity 140ms',
                   }}
                   title="Duplo-clique para renomear"
                 >

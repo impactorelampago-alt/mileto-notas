@@ -190,6 +190,7 @@ export interface OpsTask {
   status: string
   description: string | null
   priority: NotePriority | null
+  position?: number | null
   updated_at?: string | null
   due_date?: string | null
   client_id?: string | null
@@ -234,6 +235,8 @@ interface OpsActions {
   createTaskInOps: (title: string, sectionSuffix: string | null) => Promise<string | null>
   loadClients: () => Promise<void>
   updateTaskFields: (taskId: string, fields: { status?: string; due_date?: string | null; client_id?: string | null; recurrence?: Recurrence | null; parent_template_id?: string | null }) => Promise<void>
+  /** Reordena as tarefas de uma seção: grava `position` 0,1,2,… na ordem dada (reflete no board do Ops). */
+  reorderTasksInSection: (orderedTaskIds: string[]) => Promise<void>
   subscribeToOpsChanges: () => void
   unsubscribeFromOpsChanges: () => void
   setupAutoReconciliation: () => () => void
@@ -335,14 +338,14 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       const sharedCatKeys = Object.keys(sharedCatMap)
 
       type StatusRow = { label: string; color: string; key: string; position: number }
-      type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; updated_at: string | null; due_date: string | null; client_id: string | null; recurrence: Recurrence | null; parent_template_id: string | null }
+      type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; position: number | null; updated_at: string | null; due_date: string | null; client_id: string | null; recurrence: Recurrence | null; parent_template_id: string | null }
 
       // Modo "Todos": busca TODAS as tarefas (a RLS já libera o gestor/dono a ver
       // tudo). Modo normal: só as MINHAS colunas (status com meu prefixo) OU
       // atribuídas a mim. A RLS limita ao que o usuário pode ver.
       const tasksQuery = viewAll
-        ? `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&order=title.asc`
-        : `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
+        ? `tasks?select=id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id&order=title.asc`
+        : `tasks?select=id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
 
       const [statusData, taskData] = await Promise.all([
         opsFetch<StatusRow>(
@@ -429,7 +432,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
           const keyList = sharedCatKeys.map((k) => `"${k}"`).join(',')
           try {
             const rows = await opsFetch<TaskRow>(
-              `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&status=in.(${keyList})`,
+              `tasks?select=id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id&status=in.(${keyList})`,
             )
             extraTaskData.push(...rows)
           } catch (e) {
@@ -451,7 +454,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
             if (sharedTaskIds.length > 0) {
               const idList = sharedTaskIds.map((id) => `"${id}"`).join(',')
               const rows = await opsFetch<TaskRow>(
-                `tasks?select=id,title,status,description,priority,updated_at,due_date,client_id,recurrence,parent_template_id&id=in.(${idList})`,
+                `tasks?select=id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id&id=in.(${idList})`,
               )
               extraTaskData.push(...rows)
             }
@@ -727,11 +730,18 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       : undefined
     const status = targetSection?.key ?? buildStatusKey(userId, sectionSuffix ?? 'TODO')
 
+    // Nova tarefa vai pro TOPO: position menor que todas as outras DESSE status
+    // (o board ordena por position asc). Reflete no Mileto Ops (mesma coluna).
+    const sameStatus = get().tasks.filter((t) => t.status === status)
+    const newPosition = sameStatus.length > 0
+      ? Math.min(...sameStatus.map((t) => t.position ?? 0)) - 1
+      : 0
+
     const result = await opsPost<{ id: string }>('tasks', {
       title,
       status,
       priority: 'LOW',
-      position: 0,
+      position: newPosition,
       assignee_id: userId,
       creator_id: userId,
       is_template: false,
@@ -741,7 +751,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
     // Atualização otimista local + agendar refresh (Realtime também dispara)
     set((s) => ({
-      tasks: [...s.tasks, { id: result.id, title, status, description: null, priority: 'LOW', due_date: null, client_id: null, recurrence: null, parent_template_id: null }],
+      tasks: [...s.tasks, { id: result.id, title, status, description: null, priority: 'LOW', position: newPosition, due_date: null, client_id: null, recurrence: null, parent_template_id: null }],
     }))
     get().scheduleOpsRefresh('task-created')
     return result.id
@@ -778,6 +788,36 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       return
     }
     get().scheduleOpsRefresh('task-fields-updated')
+  },
+
+  reorderTasksInSection: async (orderedTaskIds) => {
+    if (orderedTaskIds.length === 0) return
+    // Atribui position 0,1,2,… na nova ordem e PERSISTE (reflete no board do Ops —
+    // mesma coluna `position`). Otimista local; reverte se a gravação falhar.
+    const prev = get().tasks
+    set((s) => ({
+      tasks: s.tasks.map((t) => {
+        const idx = orderedTaskIds.indexOf(t.id)
+        return idx >= 0 ? { ...t, position: idx } : t
+      }),
+    }))
+    try {
+      // PostgREST RESOLVE com { error } (não rejeita) em RLS/4xx — então é preciso
+      // checar o .error de cada update; senão o revert do catch vira código morto.
+      const results = await Promise.all(
+        orderedTaskIds.map((id, i) => supabase.from('tasks').update({ position: i }).eq('id', id)),
+      )
+      const failed = results.find((r) => r.error)
+      if (failed) {
+        console.error('[ops] reorderTasksInSection — update negada, revertendo:', failed.error?.message)
+        set({ tasks: prev })
+        return
+      }
+      get().scheduleOpsRefresh('tasks-reordered')
+    } catch (e) {
+      console.error('[ops] reorderTasksInSection:', e)
+      set({ tasks: prev })
+    }
   },
 
   /**
