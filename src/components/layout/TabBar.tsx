@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState, useEffect } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Check, CheckCircle2, Pin, Plus, Users, X, LogOut } from 'lucide-react'
+import { Check, CheckCircle2, ChevronLeft, ChevronRight, Pin, Plus, Users, X, LogOut } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore, SYSTEM_SUFFIXES } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
@@ -60,6 +60,23 @@ export default function TabBar() {
   const [priorityMenu, setPriorityMenu] = useState<{ noteId: string; x: number; y: number } | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
+  const tabsRef = useRef<HTMLDivElement>(null)
+  const [tabScroll, setTabScroll] = useState({ left: false, right: false })
+  const prevSectionRef = useRef<string | null>(activeSectionId)
+
+  // Setas ←/→ aparecem só quando há abas escondidas pra aquele lado.
+  const updateTabScroll = useCallback(() => {
+    const el = tabsRef.current
+    if (!el) return
+    setTabScroll({
+      left: el.scrollLeft > 1,
+      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1,
+    })
+  }, [])
+
+  const scrollTabs = (dir: -1 | 1) => {
+    tabsRef.current?.scrollBy({ left: dir * 220, behavior: 'smooth' })
+  }
 
   const renameInputRef = useRef<HTMLInputElement>(null)
 
@@ -177,6 +194,46 @@ export default function TabBar() {
     if (taskIds.length > 1) void reorderTasksInSection(taskIds)
   }
 
+  // Mantém as setas ←/→ atualizadas quando a lista de abas muda / a barra redimensiona.
+  useEffect(() => {
+    updateTabScroll()
+    const el = tabsRef.current
+    if (!el) return
+    const ro = new ResizeObserver(updateTabScroll)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [updateTabScroll, orderedNoteIds.length])
+
+  // Rola a aba ATIVA pra dentro da vista (aba nova/selecionada sempre visível;
+  // as antigas escondem à esquerda — estilo Notepad do Windows).
+  useEffect(() => {
+    if (!activeTabId) return
+    const el = tabsRef.current?.querySelector(`[data-noteid="${activeTabId}"]`)
+    el?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' })
+    updateTabScroll()
+  }, [activeTabId, orderedNoteIds.length, updateTabScroll])
+
+  // Ao TROCAR de categoria, abre a nota MAIS RECENTE dela (em vez de ficar na nota
+  // da categoria anterior — isso confunde). Só age quando a nota ativa não é desta seção.
+  useEffect(() => {
+    if (activeSectionId === prevSectionRef.current) return
+    const wasNull = prevSectionRef.current === null
+    prevSectionRef.current = activeSectionId
+    // NÃO age na 1ª definição da categoria (boot null→alvo, ou após troca de
+    // conta/visão que zera a seção): aí quem manda é a restauração de sessão do
+    // MainApp (a aba que você tinha aberta por último). Só auto-abre em trocas de
+    // categoria FEITAS por você, depois do boot.
+    if (wasNull) return
+    if (orderedNoteIds.length === 0) return
+    if (activeTabId && orderedNoteIds.includes(activeTabId)) return
+    const mostRecent = [...orderedNoteIds].sort((a, b) => {
+      const ua = notes.find((n) => n.id === a)?.updated_at ?? ''
+      const ub = notes.find((n) => n.id === b)?.updated_at ?? ''
+      return ua < ub ? 1 : ua > ub ? -1 : 0 // updated_at DESC = mais recente
+    })[0]
+    if (mostRecent) { openTab(mostRecent); setActiveTab(mostRecent) }
+  }, [activeSectionId, orderedNoteIds, activeTabId, notes, openTab, setActiveTab])
+
   const startRename = (noteId: string, currentTitle: string) => {
     setRenamingNoteId(noteId)
     setRenameValue(currentTitle === 'Sem título' ? '' : currentTitle)
@@ -239,7 +296,23 @@ export default function TabBar() {
       className="flex items-stretch"
       style={{ backgroundColor: '#1a1a1a', borderBottom: '1px solid #2a2a2a', height: 38 }}
     >
-      <div className="tabs-container flex flex-1 items-stretch overflow-x-auto">
+      {activeGroup && tabScroll.left && (
+        <button
+          onClick={() => scrollTabs(-1)}
+          title="Abas anteriores"
+          className="flex shrink-0 items-center justify-center"
+          style={{ width: 26, alignSelf: 'stretch', color: '#a1a1aa', borderRight: '1px solid #2a2a2a', transition: 'color 140ms' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = '#e4e4e4' }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = '#a1a1aa' }}
+        >
+          <ChevronLeft size={16} />
+        </button>
+      )}
+      <div
+        ref={tabsRef}
+        onScroll={updateTabScroll}
+        className="tabs-container flex flex-1 items-stretch overflow-x-auto"
+      >
         {activeGroup ? (
           <>
             {orderedNoteIds.map((noteId) => {
@@ -261,6 +334,7 @@ export default function TabBar() {
               return (
                 <div
                   key={noteId}
+                  data-noteid={noteId}
                   onClick={() => { openTab(noteId); setActiveTab(noteId) }}
                   onDoubleClick={() => { if (editable) startRename(noteId, note.title) }}
                   onMouseEnter={() => setHoveredTab(noteId)}
@@ -405,30 +479,6 @@ export default function TabBar() {
               )
             })}
 
-            {!viewAll && (
-              <button
-                onClick={() => void handleCreateNote()}
-                disabled={isSubmitting}
-                className="flex shrink-0 items-center justify-center"
-                style={{
-                  width: 32,
-                  height: 32,
-                  alignSelf: 'center',
-                  marginLeft: 6,
-                  borderRadius: 6,
-                  color: '#71717a',
-                  backgroundColor: 'transparent',
-                  transition: 'background-color 140ms, color 140ms, transform 90ms',
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#232323'; e.currentTarget.style.color = '#d4d4d8' }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#71717a' }}
-                onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
-                onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
-                title="Nova nota"
-              >
-                <Plus size={16} />
-              </button>
-            )}
           </>
         ) : (
           <div className="flex items-center" style={{ padding: '0 16px', color: '#52525b', fontSize: '12px' }}>
@@ -436,6 +486,43 @@ export default function TabBar() {
           </div>
         )}
       </div>
+
+      {activeGroup && tabScroll.right && (
+        <button
+          onClick={() => scrollTabs(1)}
+          title="Próximas abas"
+          className="flex shrink-0 items-center justify-center"
+          style={{ width: 26, alignSelf: 'stretch', color: '#a1a1aa', borderLeft: '1px solid #2a2a2a', transition: 'color 140ms' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = '#e4e4e4' }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = '#a1a1aa' }}
+        >
+          <ChevronRight size={16} />
+        </button>
+      )}
+      {activeGroup && !viewAll && (
+        <button
+          onClick={() => void handleCreateNote()}
+          disabled={isSubmitting}
+          className="flex shrink-0 items-center justify-center"
+          style={{
+            width: 32,
+            height: 32,
+            alignSelf: 'center',
+            marginLeft: 6,
+            borderRadius: 6,
+            color: '#71717a',
+            backgroundColor: 'transparent',
+            transition: 'background-color 140ms, color 140ms, transform 90ms',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#232323'; e.currentTarget.style.color = '#d4d4d8' }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#71717a' }}
+          onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
+          onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
+          title="Nova nota"
+        >
+          <Plus size={16} />
+        </button>
+      )}
 
       {/* Divisor estrutural + chip "Sair" */}
       <div style={{ width: 1, height: 16, alignSelf: 'center', backgroundColor: '#2a2a2a', margin: '0 8px' }} />

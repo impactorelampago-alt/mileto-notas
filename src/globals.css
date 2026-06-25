@@ -16,16 +16,12 @@
   --color-accent-hover: #059669;
 }
 
-/* Scrollbar das abas */
+/* Abas: scrollbar escondida — navega pelas setas ←/→ (estilo Notepad do Windows) */
+.tabs-container {
+  scrollbar-width: none;
+}
 .tabs-container::-webkit-scrollbar {
-  height: 3px;
-}
-.tabs-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-.tabs-container::-webkit-scrollbar-thumb {
-  background: #1a7a2e;
-  border-radius: 3px;
+  display: none;
 }
 
 /* Reset base */
