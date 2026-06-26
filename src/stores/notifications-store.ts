@@ -3,8 +3,8 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from './auth-store'
 import { useNotesStore } from './notes-store'
-import { useOpsStore } from './ops-store'
-import { isDoneStatus } from '../lib/status-keys'
+import { useOpsStore, SYSTEM_SUFFIXES } from './ops-store'
+import { getStatusBase } from '../lib/status-keys'
 import type { NotaNotification } from '../lib/types'
 
 /**
@@ -127,11 +127,14 @@ export const useNotificationsStore = create<NotificationsState>()((set, get) => 
     const opsStore = useOpsStore.getState()
     const task = opsStore.tasks.find((t) => t.id === n.task_id)
     if (task) {
-      // Concluída fica na categoria de ORIGEM; casa SEMPRE por key COMPLETA
-      // (nunca por sufixo — evitava cair na coluna "Concluído" errada).
-      const origins = notesStore.completedOrigins
-      const effStatus = isDoneStatus(task.status) && origins[task.id] ? origins[task.id] : task.status
-      const section = opsStore.sections.find((sec) => sec.key === effStatus)
+      // A nota concluída vive na categoria "Concluído" — navega pra onde ela está
+      // de fato: casa pela key COMPLETA; fallback por sufixo p/ DONE de sistema
+      // (tarefa compartilhada conclui no DONE do dono, key ≠ a minha).
+      let section = opsStore.sections.find((sec) => sec.key === task.status)
+      if (!section) {
+        const base = getStatusBase(task.status)
+        if (SYSTEM_SUFFIXES.has(base)) section = opsStore.sections.find((sec) => sec.key_suffix === base)
+      }
       if (section) opsStore.setActiveSectionId(section.key_suffix)
     }
     notesStore.openTab(note.id)

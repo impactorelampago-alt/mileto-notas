@@ -25,7 +25,6 @@ const POP_BORDER = '#353535'
 export default function NoteDetailBar() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
-  const completedOrigins = useNotesStore((s) => s.completedOrigins)
   const sections = useOpsStore((s) => s.sections)
   const tasks = useOpsStore((s) => s.tasks)
   const clients = useOpsStore((s) => s.clients)
@@ -60,8 +59,8 @@ export default function NoteDetailBar() {
   const pColors = NOTE_PRIORITY_COLORS[priority]
   const done = task ? isDoneStatus(task.status) : false
 
-  // Categoria efetiva (concluída fica na de ORIGEM, igual ao TabBar)
-  const effStatus = task ? (done && completedOrigins[task.id] ? completedOrigins[task.id] : task.status) : ''
+  // Categoria efetiva: concluída cai em "Concluído" (igual ao TabBar).
+  const effStatus = task ? task.status : ''
   const curSection =
     sections.find((s) => s.key === effStatus) ??
     sections.find((s) => s.key_suffix === getStatusBase(effStatus)) ??

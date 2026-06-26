@@ -26,6 +26,7 @@ export default function CategorySelect() {
   const createSection = useOpsStore((s) => s.createSection)
   const updateSection = useOpsStore((s) => s.updateSection)
   const tasks = useOpsStore((s) => s.tasks)
+  const reorderSections = useOpsStore((s) => s.reorderSections)
   const notes = useNotesStore((s) => s.notes)
   const completedOrigins = useNotesStore((s) => s.completedOrigins)
   const setDeleteSectionKeySuffix = useUIStore((s) => s.setDeleteSectionKeySuffix)
@@ -33,6 +34,7 @@ export default function CategorySelect() {
   const categoryShares = useSharingStore((s) => s.categoryShares)
   const isCategoryOwner = useAuthStore((s) => s.isCategoryOwner)
   const viewAll = useAuthStore((s) => s.viewAll)
+  const viewingAs = useAuthStore((s) => s.viewingAs)
 
   const [isOpen, setIsOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
@@ -43,6 +45,12 @@ export default function CategorySelect() {
   const [hoveredSuffix, setHoveredSuffix] = useState<string | null>(null)
   const [renamingSuffix, setRenamingSuffix] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null)
+  // Trava o arrastar da linha enquanto o mouse está sobre os botões de ação
+  // (compartilhar/renomear/excluir) — senão um mousedown+arrasto neles iniciaria
+  // o drag de reordenar a categoria inteira (o dragstart sobe pro ancestral).
+  const [actionsHovered, setActionsHovered] = useState(false)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -72,12 +80,9 @@ export default function CategorySelect() {
   const counts = useMemo(() => {
     const taskToSuffix = new Map<string, string>()
     for (const task of tasks) {
-      // Mesmo casamento do TabBar: concluída conta na categoria de ORIGEM; depois
-      // key completa (próprias/compartilhadas) com fallback por sufixo p/ sistema.
-      const effStatus =
-        isDoneStatus(task.status) && completedOrigins[task.id]
-          ? completedOrigins[task.id]
-          : task.status
+      // Casamento igual ao TabBar: key completa (próprias/compartilhadas) com
+      // fallback por sufixo p/ sistema. Concluída conta em "Concluído" (DONE).
+      const effStatus = task.status
       let section
       if (viewAll) {
         section = sections.find((s) => s.key_suffix === getStatusBase(effStatus))
@@ -90,6 +95,15 @@ export default function CategorySelect() {
           }
         }
       }
+      // Rede de segurança (igual ao TabBar): DONE sem seção "Concluído" → conta na origem.
+      if (!section && isDoneStatus(task.status) && completedOrigins[task.id]) {
+        const origin = completedOrigins[task.id]
+        section =
+          sections.find((s) => s.key === origin) ??
+          (SYSTEM_SUFFIXES.has(getStatusBase(origin))
+            ? sections.find((s) => s.key_suffix === getStatusBase(origin))
+            : undefined)
+      }
       if (section) taskToSuffix.set(task.id, section.key_suffix)
     }
     const map = new Map<string, number>()
@@ -100,9 +114,27 @@ export default function CategorySelect() {
       if (suffix) map.set(suffix, (map.get(suffix) ?? 0) + 1)
     }
     return map
-  }, [sections, tasks, notes, completedOrigins, viewAll])
+  }, [sections, tasks, notes, viewAll, completedOrigins])
 
   const active = sections.find((s) => s.key_suffix === activeSectionId) ?? null
+
+  // Arrastar pra reordenar categorias: só as PRÓPRIAS (não as compartilhadas), e
+  // só na sua conta (fora de "Todos"/impersonação). Grava custom_statuses.position
+  // (reflete no board do Ops). As compartilhadas não entram (são de outro dono).
+  const canReorderCats = !viewAll && !viewingAs
+  const handleCatDrop = (targetKey: string) => {
+    const src = dragKey
+    setDragKey(null)
+    setDragOverKey(null)
+    if (!src || src === targetKey || !canReorderCats) return
+    const own = sections.filter((s) => !s.shared).map((s) => s.key)
+    const from = own.indexOf(src)
+    const to = own.indexOf(targetKey)
+    if (from < 0 || to < 0) return
+    own.splice(from, 1)
+    own.splice(to, 0, src)
+    void reorderSections(own)
+  }
 
   const select = (suffix: string) => {
     setActiveSectionId(suffix)
@@ -215,14 +247,32 @@ export default function CategorySelect() {
                   key={s.key}
                   onClick={() => { if (!isRenaming) select(s.key_suffix) }}
                   onMouseEnter={() => setHoveredSuffix(s.key_suffix)}
-                  onMouseLeave={() => setHoveredSuffix(null)}
+                  onMouseLeave={() => { setHoveredSuffix(null); setActionsHovered(false) }}
+                  draggable={canReorderCats && !isSharedWithMe && !isRenaming && !actionsHovered}
+                  onDragStart={(e) => {
+                    if (!canReorderCats || isSharedWithMe || actionsHovered) { e.preventDefault(); return }
+                    setDragKey(s.key)
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.dataTransfer.setData('text/plain', s.key)
+                  }}
+                  onDragOver={(e) => {
+                    if (canReorderCats && dragKey && dragKey !== s.key && !isSharedWithMe) {
+                      e.preventDefault()
+                      if (dragOverKey !== s.key) setDragOverKey(s.key)
+                    }
+                  }}
+                  onDragLeave={() => setDragOverKey((cur) => (cur === s.key ? null : cur))}
+                  onDrop={(e) => { e.preventDefault(); handleCatDrop(s.key) }}
+                  onDragEnd={() => { setDragKey(null); setDragOverKey(null) }}
                   className="relative flex w-full items-center rounded-lg"
                   style={{
                     gap: 11,
                     padding: '9px 12px',
                     cursor: isRenaming ? 'default' : 'pointer',
                     backgroundColor: isActive ? 'rgba(16,185,129,0.10)' : isHovered ? '#2a2a2a' : 'transparent',
-                    transition: 'background-color 120ms',
+                    opacity: dragKey === s.key ? 0.4 : 1,
+                    boxShadow: dragOverKey === s.key ? 'inset 0 2px 0 #10b981' : 'none',
+                    transition: 'background-color 120ms, opacity 120ms',
                   }}
                 >
                   {isActive && (
@@ -276,7 +326,12 @@ export default function CategorySelect() {
 
                   {!isRenaming && (
                     isHovered && canManage ? (
-                      <div className="flex items-center" style={{ gap: 2, flexShrink: 0 }}>
+                      <div
+                        className="flex items-center"
+                        style={{ gap: 2, flexShrink: 0 }}
+                        onMouseEnter={() => setActionsHovered(true)}
+                        onMouseLeave={() => setActionsHovered(false)}
+                      >
                         <span
                           onClick={(e) => { e.stopPropagation(); setIsOpen(false); setSharePickerTarget({ kind: 'category', id: s.key, label: s.label }) }}
                           title="Compartilhar categoria"

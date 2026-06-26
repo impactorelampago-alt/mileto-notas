@@ -894,10 +894,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   /**
    * Alterna o estado concluída/pendente da nota (o ✓ da aba).
    * - Concluir: guarda a origem (status atual) e move a task pro DONE via RPC
-   *   `completeNote` (reflete no Ops + dispara o sino). A nota CONTINUA visível
-   *   na categoria de origem (o TabBar reagrupa pela origem guardada).
-   * - Desfazer: volta a task pro status de origem. Patch direto na task — funciona
-   *   pro dono; colaborador depende de RLS (v1: sem RPC de "desfazer").
+   *   `completeNote` (reflete no Ops + dispara o sino). A nota passa a aparecer na
+   *   categoria "Concluído"; a origem guardada serve só pro reabrir voltar pra lá.
+   * - Reabrir: volta a task pro status de origem via RPC `notas_reopen_task` (valida
+   *   acesso no banco). Otimista; reverte se a RPC falhar.
    */
   toggleComplete: async (noteId) => {
     if (useAuthStore.getState().viewAll) return // "Todos" é somente-leitura

@@ -101,34 +101,41 @@ export default function TabBar() {
   const taskToSectionMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const task of tasks) {
-      // Nota concluída fica na categoria de ORIGEM (guardada localmente), não no
-      // DONE — assim ela não "some" da categoria ao concluir, só fica marcada.
-      const effStatus =
-        isDoneStatus(task.status) && completedOrigins[task.id]
-          ? completedOrigins[task.id]
-          : task.status
+      // Concluída (status DONE) cai na categoria "Concluído" — a nota SAI da origem
+      // ao concluir e aparece em Concluído (reabrir volta pra origem guardada).
       let section
       if (viewAll) {
         // No modo "Todos" as seções são únicas por SUFIXO (agregadas de toda a
         // equipe) → casa pelo sufixo, agregando o "Lembrete" de todo mundo etc.
-        section = sections.find((item) => item.key_suffix === getStatusBase(effStatus))
+        section = sections.find((item) => item.key_suffix === getStatusBase(task.status))
       } else {
         // 1) Casamento exato pela key completa: categorias próprias (custom) e compartilhadas.
-        section = sections.find((item) => effStatus === item.key)
-        // 2) Fallback p/ categorias de SISTEMA (ex.: Lembrete/TODO): a section.key é
-        //    deduplicada por rótulo e pode ser a key de outro usuário, mas a task
-        //    carrega o MEU `USR_<id>_SUFIXO`. Casa pelo sufixo, só entre sufixos de sistema.
+        section = sections.find((item) => task.status === item.key)
+        // 2) Fallback p/ categorias de SISTEMA (Lembrete/TODO, Concluído/DONE…): a
+        //    section.key é deduplicada por rótulo e pode ser a key de outro usuário, mas a
+        //    task carrega o MEU `USR_<id>_SUFIXO`. Casa pelo sufixo, só entre sufixos de sistema.
         if (!section) {
-          const base = getStatusBase(effStatus)
+          const base = getStatusBase(task.status)
           if (SYSTEM_SUFFIXES.has(base)) {
             section = sections.find((item) => item.key_suffix === base)
           }
         }
       }
+      // Rede de segurança: task DONE sem seção "Concluído" (conta atípica sem a row
+      // _DONE) → mantém a nota na categoria de ORIGEM em vez de sumir do TabBar. No
+      // caso normal (Concluído existe) isto nunca roda.
+      if (!section && isDoneStatus(task.status) && completedOrigins[task.id]) {
+        const origin = completedOrigins[task.id]
+        section =
+          sections.find((item) => item.key === origin) ??
+          (SYSTEM_SUFFIXES.has(getStatusBase(origin))
+            ? sections.find((item) => item.key_suffix === getStatusBase(origin))
+            : undefined)
+      }
       if (section) map.set(task.id, section.key_suffix)
     }
     return map
-  }, [tasks, sections, completedOrigins, viewAll])
+  }, [tasks, sections, viewAll, completedOrigins])
 
   const sectionGroups = useMemo<SectionGroup[]>(() => {
     const groups = new Map<string, SectionGroup>()
@@ -252,7 +259,19 @@ export default function TabBar() {
   // pós-conclusão nunca perder o texto recém-digitado. force-save grava o conteúdo
   // no store na hora (set síncrono) + sobe pra nuvem; só então conclui.
   const concludeNote = (noteId: string) => {
-    if (noteId === activeTabId) window.dispatchEvent(new Event('force-save'))
+    const wasActive = noteId === activeTabId
+    if (wasActive) {
+      window.dispatchEvent(new Event('force-save'))
+      // Concluir/reabrir tira a nota da categoria atual (vai pra "Concluído", ou
+      // volta pra origem). Foca a aba vizinha que PERMANECE, pra não ficar olhando
+      // uma aba que saiu da categoria.
+      const idx = orderedNoteIds.indexOf(noteId)
+      const neighbor = orderedNoteIds[idx + 1] ?? orderedNoteIds[idx - 1] ?? null
+      if (neighbor && neighbor !== noteId) {
+        openTab(neighbor)
+        setActiveTab(neighbor)
+      }
+    }
     void toggleComplete(noteId)
   }
 
@@ -279,6 +298,8 @@ export default function TabBar() {
       ensuredSectionRef.current = null
       return
     }
+    // Nunca auto-cria nota em "Concluído" (DONE) — senão nasceria nota "já concluída".
+    if (activeSectionId === 'DONE') return
     if (useAuthStore.getState().viewingAs || useAuthStore.getState().viewAll) return
     const sectionKey = activeGroup.key
     if (ensuredSectionRef.current === sectionKey) return

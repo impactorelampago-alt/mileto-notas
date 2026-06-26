@@ -237,6 +237,8 @@ interface OpsActions {
   updateTaskFields: (taskId: string, fields: { status?: string; due_date?: string | null; client_id?: string | null; recurrence?: Recurrence | null; parent_template_id?: string | null }) => Promise<void>
   /** Reordena as tarefas de uma seção: grava `position` 0,1,2,… na ordem dada (reflete no board do Ops). */
   reorderTasksInSection: (orderedTaskIds: string[]) => Promise<void>
+  /** Reordena as categorias: grava `position` 0,1,2,… nas custom_statuses do usuário (reflete no board do Ops). */
+  reorderSections: (orderedKeys: string[]) => Promise<void>
   subscribeToOpsChanges: () => void
   unsubscribeFromOpsChanges: () => void
   setupAutoReconciliation: () => () => void
@@ -356,6 +358,10 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
       const seen = new Set<string>()
       const newSections: OpsSection[] = []
+      // Ordenação das seções PRÓPRIAS pela MINHA position (key_suffix → position).
+      // Necessário porque o DONO lê as colunas de TODOS: sem isto, seções de SISTEMA
+      // sairiam por "primeiro-visto" (position global) e reordenar não "grudaria".
+      const orderPos = new Map<string, number>()
 
       // statusData já vem ordenado por position (query)
       for (const row of statusData) {
@@ -386,18 +392,28 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
           const mine = cleanedUserId ? row.key.includes(cleanedUserId) : false
           if (!existing) {
             newSections.push({ label: row.label, color: row.color, key_suffix: suffix, key: row.key })
+            orderPos.set(suffix, row.position)
           } else if (mine) {
-            // Achou a MINHA row: prevalece (key/label/cor do usuário logado).
+            // Achou a MINHA row: prevalece (key/label/cor + ORDEM do usuário logado).
             existing.label = row.label
             existing.color = row.color
             existing.key = row.key
+            orderPos.set(suffix, row.position)
           }
         } else if (cleanedUserId && row.key.includes(cleanedUserId)) {
           if (!seen.has(row.label)) {
             seen.add(row.label)
             newSections.push({ label: row.label, color: row.color, key_suffix: suffix, key: row.key })
+            orderPos.set(suffix, row.position)
           }
         }
+      }
+
+      // Ordena as seções PRÓPRIAS pela minha position (as compartilhadas entram
+      // depois, sempre no fim). Pra não-DONO é no-op (só as minhas rows são legíveis,
+      // já vêm por position); pro DONO corrige a ordem das seções de sistema.
+      if (!viewAll) {
+        newSections.sort((a, b) => (orderPos.get(a.key_suffix) ?? 0) - (orderPos.get(b.key_suffix) ?? 0))
       }
 
       // Categorias compartilhadas COMIGO (de outro dono): adiciona a row de
@@ -817,6 +833,45 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     } catch (e) {
       console.error('[ops] reorderTasksInSection:', e)
       set({ tasks: prev })
+    }
+  },
+
+  reorderSections: async (orderedKeys) => {
+    if (orderedKeys.length === 0) return
+    // Grava position 0,1,2,… nas custom_statuses do usuário, na ordem dada (reflete
+    // no board do Ops — mesma coluna `position`). Otimista; reverte se a gravação falhar.
+    // Só PATCHa as keys do PRÓPRIO usuário: uma seção de SISTEMA pode carregar a key
+    // de outro dono se o usuário (DONO, que lê tudo) não tiver row própria daquele
+    // sufixo; a RLS negaria o update e reverteria o reorder inteiro silenciosamente.
+    const myId = useAuthStore.getState().user?.id
+    const myPrefix = myId ? buildStatusKey(myId, '') : null
+    const keys = myPrefix ? orderedKeys.filter((k) => k.startsWith(myPrefix)) : orderedKeys
+    if (keys.length === 0) return
+    const prev = get().sections
+    const byKey = new Map(prev.map((s) => [s.key, s]))
+    const passed = new Set(orderedKeys)
+    const reordered = orderedKeys
+      .map((k) => byKey.get(k))
+      .filter((s): s is OpsSection => !!s)
+    // Próprias não passadas (não deveria haver) antes das compartilhadas, que ficam no fim.
+    const leftovers = prev.filter((s) => !s.shared && !passed.has(s.key))
+    const shared = prev.filter((s) => s.shared)
+    set({ sections: [...reordered, ...leftovers, ...shared] })
+    try {
+      // PostgREST RESOLVE com { error } (não rejeita) em RLS/4xx — checar cada update.
+      const results = await Promise.all(
+        keys.map((key, i) => supabase.from('custom_statuses').update({ position: i }).eq('key', key)),
+      )
+      const failed = results.find((r) => r.error)
+      if (failed) {
+        console.error('[ops] reorderSections — update negada, revertendo:', failed.error?.message)
+        set({ sections: prev })
+        return
+      }
+      get().scheduleOpsRefresh('sections-reordered')
+    } catch (e) {
+      console.error('[ops] reorderSections:', e)
+      set({ sections: prev })
     }
   },
 

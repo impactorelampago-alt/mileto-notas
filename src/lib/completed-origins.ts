@@ -1,14 +1,13 @@
 /**
- * Mapa local (Notas-only) de "categoria de origem" de uma tarefa concluída.
+ * Mapa local (Notas-only) da "categoria de origem" de uma tarefa concluída.
  *
- * Quando o usuário conclui uma nota, a `tasks.status` vai pro DONE do dono
- * (reflete no kanban do Ops e dispara o sino). Mas no Notas a gente quer que a
- * nota CONTINUE aparecendo na categoria de onde foi concluída, marcada com ✓
- * verde. Para isso guardamos aqui o status de origem (chave: task_id) e o
- * TabBar/CategorySelect reagrupam a nota concluída na origem.
+ * Quando o usuário conclui uma nota, a `tasks.status` vai pro DONE do dono e a
+ * nota passa a aparecer na categoria "Concluído". Guardamos aqui o status de
+ * ORIGEM (chave: task_id) só para o REABRIR devolver a nota à coluna de onde ela
+ * saiu — o TabBar/Editor não usam mais isto para EXIBIR (exibem pelo status real).
  *
  * É local por máquina (localStorage). Não vai pro banco — é só uma conveniência
- * de exibição do Notas; o estado "concluída" de verdade vive na `tasks.status`.
+ * do Notas; o estado "concluída" de verdade vive na `tasks.status`.
  */
 const KEY = 'notas:completed-origins'
 
