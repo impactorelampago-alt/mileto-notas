@@ -213,10 +213,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const loaded = await notesFetch<Note>(
         `notes?select=*&creator_id=eq.${userId}&is_archived=eq.false&order=is_pinned.desc,position.asc,updated_at.desc`,
       )
-      set({
-        notes: loaded.map(normalizeNote),
-        isLoading: false,
-        hasLoadedOnce: true,
+      const loadedNotes = loaded.map(normalizeNote)
+      const loadedIds = new Set(loadedNotes.map((n) => n.id))
+      set((s) => {
+        // Preserva notas de colaboração (criadas por outros) que foram carregadas sob
+        // demanda via fetchNoteById — a query acima só traz notas do próprio usuário,
+        // então sobrescrever o array inteiro faria a nota compartilhada e suas subnotas sumirem.
+        const foreign = s.notes.filter((n) => n.creator_id !== userId && !loadedIds.has(n.id))
+        return {
+          notes: [...loadedNotes, ...foreign],
+          isLoading: false,
+          hasLoadedOnce: true,
+        }
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'

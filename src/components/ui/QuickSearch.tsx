@@ -145,7 +145,7 @@ export default function QuickSearch() {
                   <FileText size={14} style={{ color: '#555', flexShrink: 0 }} />
                   <div className="flex-1 min-w-0">
                     <div className="text-[13px] text-zinc-200 truncate">
-                      {parent ? `${parent.title || 'Sem titulo'} / ${note.title || 'Sem titulo'}` : note.title}
+                      {parent ? `${parent.title || 'Sem título'} / ${note.title || 'Sem título'}` : note.title}
                     </div>
                     {note.content && (
                       <div className="text-[11px] text-zinc-600 truncate mt-0.5">

@@ -99,7 +99,7 @@ export default function SubnoteTree() {
             border: `1px solid ${rootActive ? '#245642' : 'transparent'}`,
             color: rootActive ? '#d1fae5' : '#d4d4d8',
           }}
-          title={rootNote.title || 'Sem titulo'}
+          title={rootNote.title || 'Sem título'}
         >
           <span
             style={{
@@ -111,7 +111,7 @@ export default function SubnoteTree() {
             }}
           />
           <span className="truncate text-[12px] font-medium">
-            {rootNote.title || 'Sem titulo'}
+            {rootNote.title || 'Sem título'}
           </span>
         </button>
 
@@ -135,11 +135,11 @@ export default function SubnoteTree() {
                     border: `1px solid ${isActive ? '#245642' : 'transparent'}`,
                     color: isActive ? '#d1fae5' : '#c4c4c7',
                   }}
-                  title={note.title || 'Sem titulo'}
+                  title={note.title || 'Sem título'}
                 >
                   <FileText size={12} style={{ color: isActive ? '#34d399' : '#71717a', flexShrink: 0 }} />
                   <span className="truncate text-[12px]">
-                    {note.title || 'Sem titulo'}
+                    {note.title || 'Sem título'}
                   </span>
                 </button>
 
@@ -170,7 +170,7 @@ export default function SubnoteTree() {
                   }
                 }}
                 autoFocus
-                placeholder="Titulo da subnota"
+                placeholder="Título da subnota"
                 className="min-w-0 flex-1 rounded-md border bg-zinc-900 px-2 py-1 text-[12px] outline-none"
                 style={{ borderColor: '#3d3d3d', color: '#d4d4d8' }}
               />

@@ -29,13 +29,23 @@ export default function Editor() {
     setLocalContent(content)
     localContentRef.current = content
     setContextMenu(null)
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current)
-      debounceRef.current = null
-    }
-    if (titleDebounceRef.current) {
-      clearTimeout(titleDebounceRef.current)
-      titleDebounceRef.current = null
+
+    const prevNoteId = activeNote?.id ?? null
+    return () => {
+      // Ao trocar de nota (ex.: clicar numa subnota no painel), grava o conteúdo pendente
+      // da nota anterior antes de cancelar o debounce — senão o último trecho digitado
+      // dentro da janela de ~500ms é descartado.
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+        if (prevNoteId) {
+          void useNotesStore.getState().updateNote(prevNoteId, { content: localContentRef.current })
+        }
+      }
+      if (titleDebounceRef.current) {
+        clearTimeout(titleDebounceRef.current)
+        titleDebounceRef.current = null
+      }
     }
   }, [activeNote?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
