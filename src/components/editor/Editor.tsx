@@ -3,6 +3,7 @@ import { NotebookPen } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
 import AddAnnotationToCompanyModal from '../ui/AddAnnotationToCompanyModal'
+import SubnoteTree from './SubnoteTree'
 
 export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
@@ -134,72 +135,76 @@ export default function Editor() {
   return (
     <div className="editor-content flex flex-1 flex-col overflow-hidden">
       <div className="flex flex-1 overflow-hidden">
-        {showLineNumbers && (
-          <div
-            ref={lineNumbersRef}
-            className="no-scrollbar w-[45px] shrink-0 select-none overflow-y-scroll text-right"
-            style={{
-              backgroundColor: '#252526',
-              color: '#6d6d6d',
-              lineHeight: `${lineHeight}px`,
-              fontSize: `${fontSize - 1}px`,
-              fontFamily: "'JetBrains Mono', Consolas, monospace",
-              borderRight: '1px solid #3d3d3d',
-              paddingTop: '16px',
-            }}
-            aria-hidden="true"
-          >
-            <div style={{ paddingRight: '20px', paddingLeft: '12px' }}>
-              {Array.from({ length: lineCount }, (_, i) => (
-                <div key={i + 1}>{i + 1}</div>
-              ))}
-            </div>
-          </div>
-        )}
+        <SubnoteTree />
 
-        <textarea
-          ref={textareaRef}
-          value={localContent}
-          onChange={handleChange}
-          onScroll={handleScroll}
-          onKeyUp={updateCursor}
-          onClick={updateCursor}
-          onSelect={updateCursor}
-          onContextMenu={(e) => {
-            const el = textareaRef.current
-            if (!el) return
-            const selectionStart = el.selectionStart
-            const selectionEnd = el.selectionEnd
-            if (selectionStart === selectionEnd) return
-            const selectedText = el.value.slice(selectionStart, selectionEnd).trim()
-            if (!selectedText) return
-            e.preventDefault()
-            setContextMenu({
-              x: e.clientX,
-              y: e.clientY,
-              text: selectedText,
-              start: selectionStart,
-              end: selectionEnd,
-            })
-          }}
-          placeholder="Comece a escrever..."
-          spellCheck={false}
-          wrap={wordWrap ? 'soft' : 'off'}
-          className="editor-textarea flex-1 resize-none outline-none"
-          style={{
-            backgroundColor: '#2d2d2d',
-            color: '#cccccc',
-            fontFamily: "'JetBrains Mono', Consolas, monospace",
-            fontSize: `${fontSize}px`,
-            lineHeight: `${lineHeight}px`,
-            caretColor: '#cccccc',
-            overflowX: wordWrap ? 'hidden' : 'auto',
-            paddingLeft: '24px',
-            paddingRight: '24px',
-            paddingTop: '16px',
-            paddingBottom: '16px',
-          }}
-        />
+        <div className="flex min-w-0 flex-1 overflow-hidden">
+          {showLineNumbers && (
+            <div
+              ref={lineNumbersRef}
+              className="no-scrollbar w-[45px] shrink-0 select-none overflow-y-scroll text-right"
+              style={{
+                backgroundColor: '#252526',
+                color: '#6d6d6d',
+                lineHeight: `${lineHeight}px`,
+                fontSize: `${fontSize - 1}px`,
+                fontFamily: "'JetBrains Mono', Consolas, monospace",
+                borderRight: '1px solid #3d3d3d',
+                paddingTop: '16px',
+              }}
+              aria-hidden="true"
+            >
+              <div style={{ paddingRight: '20px', paddingLeft: '12px' }}>
+                {Array.from({ length: lineCount }, (_, i) => (
+                  <div key={i + 1}>{i + 1}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <textarea
+            ref={textareaRef}
+            value={localContent}
+            onChange={handleChange}
+            onScroll={handleScroll}
+            onKeyUp={updateCursor}
+            onClick={updateCursor}
+            onSelect={updateCursor}
+            onContextMenu={(e) => {
+              const el = textareaRef.current
+              if (!el) return
+              const selectionStart = el.selectionStart
+              const selectionEnd = el.selectionEnd
+              if (selectionStart === selectionEnd) return
+              const selectedText = el.value.slice(selectionStart, selectionEnd).trim()
+              if (!selectedText) return
+              e.preventDefault()
+              setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                text: selectedText,
+                start: selectionStart,
+                end: selectionEnd,
+              })
+            }}
+            placeholder="Comece a escrever..."
+            spellCheck={false}
+            wrap={wordWrap ? 'soft' : 'off'}
+            className="editor-textarea min-w-0 flex-1 resize-none outline-none"
+            style={{
+              backgroundColor: '#2d2d2d',
+              color: '#cccccc',
+              fontFamily: "'JetBrains Mono', Consolas, monospace",
+              fontSize: `${fontSize}px`,
+              lineHeight: `${lineHeight}px`,
+              caretColor: '#cccccc',
+              overflowX: wordWrap ? 'hidden' : 'auto',
+              paddingLeft: '24px',
+              paddingRight: '24px',
+              paddingTop: '16px',
+              paddingBottom: '16px',
+            }}
+          />
+        </div>
       </div>
 
       {contextMenu && (

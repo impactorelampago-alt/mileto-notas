@@ -192,6 +192,9 @@ export default function MainApp() {
 
   if (!isAuthenticated) return null
 
+  const activeNote = activeTabId ? notes.find((n) => n.id === activeTabId) ?? null : null
+  const activeRootNoteId = activeNote?.parent_note_id ?? activeTabId
+
   const handleCategoryConfirm = (name: string, color: string) => {
     setShowCategoryModal(false)
     void createCategory(name, color)
@@ -284,9 +287,9 @@ export default function MainApp() {
         />
       )}
 
-      {showCollaboratorsModal && activeTabId && (
+      {showCollaboratorsModal && activeRootNoteId && (
         <CollaboratorsModal
-          noteId={activeTabId}
+          noteId={activeRootNoteId}
           onClose={() => setShowCollaboratorsModal(false)}
         />
       )}

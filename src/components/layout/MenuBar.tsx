@@ -58,7 +58,7 @@ export function MenuBar() {
       })
     }
     for (const note of notes) {
-      if (!note.task_id) continue
+      if (!note.task_id || note.parent_note_id !== null) continue
       const sectionKey = taskToSectionMap.get(note.task_id)
       if (!sectionKey) continue
       groups.get(sectionKey)?.noteIds.push(note.id)

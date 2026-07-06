@@ -21,10 +21,14 @@ export default function QuickSearch() {
   const filtered = useMemo(() => {
     if (!query.trim()) return notes.slice(0, 20)
     const lower = query.toLowerCase()
-    return notes.filter((n) =>
-      n.title.toLowerCase().includes(lower) ||
-      n.content.toLowerCase().includes(lower)
-    ).slice(0, 20)
+    return notes.filter((n) => {
+      const parent = n.parent_note_id ? notes.find((item) => item.id === n.parent_note_id) : null
+      return (
+        n.title.toLowerCase().includes(lower) ||
+        n.content.toLowerCase().includes(lower) ||
+        (parent?.title.toLowerCase().includes(lower) ?? false)
+      )
+    }).slice(0, 20)
   }, [query, notes])
 
   useEffect(() => {
@@ -43,7 +47,10 @@ export default function QuickSearch() {
 
   const handleSelect = (noteId: string) => {
     const note = notes.find((n) => n.id === noteId)
-    const section = note ? getSectionForNote(note.task_id) : null
+    const rootNote = note?.parent_note_id
+      ? notes.find((n) => n.id === note.parent_note_id) ?? note
+      : note
+    const section = rootNote ? getSectionForNote(rootNote.task_id) : null
 
     if (section) {
       // Navegar para a seção da tarefa (mesmo comportamento do clique no MenuBar)
@@ -57,13 +64,18 @@ export default function QuickSearch() {
       const { tasks: allTasks } = useOpsStore.getState()
       const sectionTasks = allTasks.filter((t) => isStatusSuffix(t.status, section.key_suffix))
       const taskIds = new Set(sectionTasks.map((t) => t.id))
-      const sectionNotes = notes.filter((n) => n.task_id !== null && taskIds.has(n.task_id))
+      const sectionNotes = notes.filter((n) =>
+        n.parent_note_id === null &&
+        n.task_id !== null &&
+        taskIds.has(n.task_id)
+      )
 
       for (const sNote of sectionNotes) {
         openTab(sNote.id)
       }
 
       // Garantir que a nota selecionada fique ativa
+      openTab(noteId)
       useNotesStore.getState().setActiveTab(noteId)
     } else {
       // Nota avulsa (sem task_id) — só abre a aba
@@ -118,7 +130,9 @@ export default function QuickSearch() {
             </div>
           ) : (
             filtered.map((note, i) => {
-              const section = getSectionForNote(note.task_id)
+              const parent = note.parent_note_id ? notes.find((n) => n.id === note.parent_note_id) : null
+              const rootNote = parent ?? note
+              const section = getSectionForNote(rootNote.task_id)
               return (
                 <button
                   key={note.id}
@@ -130,7 +144,9 @@ export default function QuickSearch() {
                 >
                   <FileText size={14} style={{ color: '#555', flexShrink: 0 }} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] text-zinc-200 truncate">{note.title}</div>
+                    <div className="text-[13px] text-zinc-200 truncate">
+                      {parent ? `${parent.title || 'Sem titulo'} / ${note.title || 'Sem titulo'}` : note.title}
+                    </div>
                     {note.content && (
                       <div className="text-[11px] text-zinc-600 truncate mt-0.5">
                         {note.content.slice(0, 80)}

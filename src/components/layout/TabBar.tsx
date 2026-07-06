@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { Circle, Pin, Plus, Users, X } from 'lucide-react'
+import { Circle, FileText, Pin, Plus, Users, X } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useCategoriesStore } from '../../stores/categories-store'
 import { useOpsStore } from '../../stores/ops-store'
@@ -72,7 +72,7 @@ export default function TabBar() {
       })
     }
     for (const note of notes) {
-      if (!note.task_id) continue
+      if (!note.task_id || note.parent_note_id !== null) continue
       const sectionKey = taskToSectionMap.get(note.task_id)
       if (!sectionKey) continue
       groups.get(sectionKey)?.noteIds.push(note.id)
@@ -129,7 +129,7 @@ export default function TabBar() {
   }
 
   const CARD_BASE_CLASSES = 'flex items-center gap-1.5 rounded-lg px-3 py-2 text-left transition-colors'
-  const CARD_WIDTH_STYLE = { maxWidth: 220 } as const
+  const CARD_WIDTH_STYLE = { width: 220, maxWidth: 220 } as const
 
   return (
     <div style={{ padding: '6px 10px 0 10px' }}>
@@ -144,6 +144,7 @@ export default function TabBar() {
           const priority = normalizePriority(note.priority)
           const priorityColors = NOTE_PRIORITY_COLORS[priority]
           const category = note.category_id ? categories.find((item) => item.id === note.category_id) : null
+          const subnoteCount = notes.filter((item) => item.parent_note_id === noteId).length
 
           return (
             <button
@@ -224,8 +225,19 @@ export default function TabBar() {
                   placeholder="Nome da nota..."
                 />
               ) : (
-                <span className="truncate text-[12px]" style={{ color: isActive ? '#f4f4f5' : '#d4d4d8', maxWidth: 130 }}>
+                <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: isActive ? '#f4f4f5' : '#d4d4d8' }}>
                   {note.title || 'Sem título'}
+                </span>
+              )}
+
+              {subnoteCount > 0 && (
+                <span
+                  className="flex shrink-0 items-center gap-1"
+                  style={{ color: isActive ? '#a7f3d0' : '#71717a', fontSize: '10.5px' }}
+                  title={`${subnoteCount} subnota${subnoteCount === 1 ? '' : 's'}`}
+                >
+                  <FileText size={9} />
+                  {subnoteCount}
                 </span>
               )}
 

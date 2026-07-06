@@ -12,6 +12,32 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 let _notesToken: string | null = null
 let _deletionInProgress = false
 
+function normalizeNote(note: Note): Note {
+  return {
+    ...note,
+    priority: normalizePriority(note.priority),
+    parent_note_id: note.parent_note_id ?? null,
+    position: note.position ?? 0,
+  }
+}
+
+function collectNoteTreeIds(notes: Note[], rootId: string): Set<string> {
+  const ids = new Set<string>([rootId])
+  let changed = true
+
+  while (changed) {
+    changed = false
+    for (const note of notes) {
+      if (note.parent_note_id && ids.has(note.parent_note_id) && !ids.has(note.id)) {
+        ids.add(note.id)
+        changed = true
+      }
+    }
+  }
+
+  return ids
+}
+
 async function notesFetch<T>(path: string): Promise<T[]> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 5000)
@@ -151,6 +177,7 @@ interface NotesState {
   syncNotesFromTaskDescriptions: () => void
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
+  createSubnote: (parentNoteId: string, options?: { title?: string }) => Promise<Note | null>
   updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'priority' | 'category_id' | 'is_pinned' | 'is_archived' | 'client_id' | 'task_id'>>) => Promise<void>
   deleteNote: (id: string) => Promise<void>
   openTab: (noteId: string) => void
@@ -158,6 +185,9 @@ interface NotesState {
   closeAllTabs: () => void
   setActiveTab: (noteId: string) => void
   getNotesByCategory: (categoryId: string | null) => Note[]
+  getRootNotes: () => Note[]
+  getSubnotes: (parentNoteId: string) => Note[]
+  getRootNoteFor: (noteId: string) => Note | null
   getActiveNote: () => Note | null
   fetchNoteById: (noteId: string) => Promise<Note | null>
   noteIdsWithCollaborators: Set<string>
@@ -181,10 +211,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     set({ isLoading: true })
     try {
       const loaded = await notesFetch<Note>(
-        `notes?select=*&creator_id=eq.${userId}&is_archived=eq.false&order=is_pinned.desc,updated_at.desc`,
+        `notes?select=*&creator_id=eq.${userId}&is_archived=eq.false&order=is_pinned.desc,position.asc,updated_at.desc`,
       )
       set({
-        notes: loaded.map((note) => ({ ...note, priority: normalizePriority(note.priority) })),
+        notes: loaded.map(normalizeNote),
         isLoading: false,
         hasLoadedOnce: true,
       })
@@ -268,6 +298,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       task_id: t.id,
       is_pinned: false,
       is_archived: false,
+      parent_note_id: null,
+      position: 0,
     }))
 
     const { data, error } = await supabase
@@ -308,6 +340,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       title,
       content: '',
       priority: 'LOW',
+      parent_note_id: null,
+      position: 0,
       category_id: categoryId ?? null,
       client_id: null,
       task_id: taskId,
@@ -329,6 +363,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         content: optimistic.content,
         category_id: optimistic.category_id,
         priority: optimistic.priority,
+        parent_note_id: optimistic.parent_note_id,
+        position: optimistic.position,
         creator_id: userId,
         task_id: taskId,
         is_pinned: false,
@@ -347,7 +383,84 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       return null
     }
 
-    const created = data as Note
+    const created = normalizeNote(data as Note)
+    set((s) => ({
+      notes: s.notes.map((n) => (n.id === optimistic.id ? created : n)),
+      openTabs: s.openTabs.map((id) => (id === optimistic.id ? created.id : id)),
+      activeTabId: s.activeTabId === optimistic.id ? created.id : s.activeTabId,
+    }))
+    return created
+  },
+
+  createSubnote: async (parentNoteId, options = {}) => {
+    const userId = useAuthStore.getState().user?.id
+    if (!userId) return null
+
+    const notes = get().notes
+    const parentNote = notes.find((n) => n.id === parentNoteId)
+    if (!parentNote) return null
+
+    const rootNote = parentNote.parent_note_id
+      ? notes.find((n) => n.id === parentNote.parent_note_id)
+      : parentNote
+    if (!rootNote) return null
+
+    const { title = 'Nova subnota' } = options
+    const prevActiveTabId = get().activeTabId
+    const siblings = notes.filter((n) => n.parent_note_id === rootNote.id)
+    const position = siblings.length > 0
+      ? Math.max(...siblings.map((n) => n.position)) + 1
+      : 0
+    const now = new Date().toISOString()
+
+    const optimistic: Note = {
+      id: crypto.randomUUID(),
+      title,
+      content: '',
+      priority: 'LOW',
+      parent_note_id: rootNote.id,
+      position,
+      category_id: rootNote.category_id,
+      client_id: rootNote.client_id,
+      task_id: null,
+      creator_id: userId,
+      is_pinned: false,
+      is_archived: false,
+      created_at: now,
+      updated_at: now,
+    }
+
+    set((s) => ({ notes: [...s.notes, optimistic] }))
+    get().openTab(optimistic.id)
+
+    const { data, error } = await supabase
+      .from('notes')
+      .insert({
+        title: optimistic.title,
+        content: optimistic.content,
+        priority: optimistic.priority,
+        parent_note_id: optimistic.parent_note_id,
+        position: optimistic.position,
+        category_id: optimistic.category_id,
+        client_id: optimistic.client_id,
+        creator_id: userId,
+        is_pinned: false,
+        is_archived: false,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      console.error('[notes] createSubnote:', error.message)
+      set((s) => ({
+        notes: s.notes.filter((n) => n.id !== optimistic.id),
+        openTabs: s.openTabs.filter((id) => id !== optimistic.id),
+        activeTabId: s.activeTabId === optimistic.id ? prevActiveTabId : s.activeTabId,
+      }))
+      return null
+    }
+
+    const created = normalizeNote(data as Note)
     set((s) => ({
       notes: s.notes.map((n) => (n.id === optimistic.id ? created : n)),
       openTabs: s.openTabs.map((id) => (id === optimistic.id ? created.id : id)),
@@ -427,14 +540,15 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
       // 3. Atualiza UI depois que o banco confirmou
       set((s) => {
-        const newTabs = s.openTabs.filter((t) => t !== id)
+        const deletedIds = collectNoteTreeIds(s.notes, id)
+        const firstDeletedTabIndex = s.openTabs.findIndex((tabId) => deletedIds.has(tabId))
+        const newTabs = s.openTabs.filter((tabId) => !deletedIds.has(tabId))
         let newActive = s.activeTabId
-        if (s.activeTabId === id) {
-          const idx = s.openTabs.indexOf(id)
-          newActive = newTabs[idx] ?? newTabs[idx - 1] ?? null
+        if (s.activeTabId && deletedIds.has(s.activeTabId)) {
+          newActive = newTabs[firstDeletedTabIndex] ?? newTabs[firstDeletedTabIndex - 1] ?? null
         }
         return {
-          notes: s.notes.filter((n) => n.id !== id),
+          notes: s.notes.filter((n) => !deletedIds.has(n.id)),
           openTabs: newTabs,
           activeTabId: newActive,
         }
@@ -468,8 +582,26 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
   getNotesByCategory: (categoryId) => {
     const { notes } = get()
-    if (categoryId === null) return notes
-    return notes.filter((n) => n.category_id === categoryId)
+    const rootNotes = notes.filter((n) => n.parent_note_id === null)
+    if (categoryId === null) return rootNotes
+    return rootNotes.filter((n) => n.category_id === categoryId)
+  },
+
+  getRootNotes: () => {
+    return get().notes.filter((n) => n.parent_note_id === null)
+  },
+
+  getSubnotes: (parentNoteId) => {
+    return get().notes
+      .filter((n) => n.parent_note_id === parentNoteId)
+      .sort((a, b) => a.position - b.position || b.updated_at.localeCompare(a.updated_at))
+  },
+
+  getRootNoteFor: (noteId) => {
+    const note = get().notes.find((n) => n.id === noteId)
+    if (!note) return null
+    if (!note.parent_note_id) return note
+    return get().notes.find((n) => n.id === note.parent_note_id) ?? null
   },
 
   getActiveNote: () => {
@@ -490,8 +622,24 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
     if (error || !data) return null
 
-    const note = { ...(data as Note), priority: normalizePriority((data as Note).priority) }
-    set((state) => ({ notes: [note, ...state.notes] }))
+    const note = normalizeNote(data as Note)
+    const rootNoteId = note.parent_note_id ?? note.id
+
+    const { data: relatedData } = await supabase
+      .from('notes')
+      .select('*')
+      .or(`id.eq.${rootNoteId},parent_note_id.eq.${rootNoteId}`)
+      .eq('is_archived', false)
+      .order('position', { ascending: true })
+
+    const relatedNotes = (relatedData ?? [note]).map((item) => normalizeNote(item as Note))
+
+    set((state) => {
+      const merged = new Map<string, Note>()
+      for (const existingNote of state.notes) merged.set(existingNote.id, existingNote)
+      for (const relatedNote of relatedNotes) merged.set(relatedNote.id, relatedNote)
+      return { notes: Array.from(merged.values()) }
+    })
     return note
   },
 
@@ -538,7 +686,15 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
             return {
               notes: state.notes.map((n) =>
                 n.id === updated.id
-                  ? { ...n, title: updated.title, content: updated.content, updated_at: updated.updated_at }
+                  ? {
+                      ...n,
+                      title: updated.title,
+                      content: updated.content,
+                      priority: normalizePriority(updated.priority),
+                      parent_note_id: updated.parent_note_id ?? null,
+                      position: updated.position ?? 0,
+                      updated_at: updated.updated_at,
+                    }
                   : n,
               ),
             }

@@ -482,6 +482,18 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         .filter((n) => n.task_id !== null && taskIds.includes(n.task_id))
         .map((n) => n.id),
     )
+
+    let expandedDeletedIds = true
+    while (expandedDeletedIds) {
+      expandedDeletedIds = false
+      for (const note of notesStore.notes) {
+        if (note.parent_note_id && deletedNoteIds.has(note.parent_note_id) && !deletedNoteIds.has(note.id)) {
+          deletedNoteIds.add(note.id)
+          expandedDeletedIds = true
+        }
+      }
+    }
+
     useNotesStore.setState((s) => ({
       notes: s.notes.filter((n) => !deletedNoteIds.has(n.id)),
       openTabs: s.openTabs.filter((id) => !deletedNoteIds.has(id)),
