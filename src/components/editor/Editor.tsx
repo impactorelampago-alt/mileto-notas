@@ -18,6 +18,7 @@ export default function Editor() {
   const canEditNote = useAuthStore((s) => s.canEditNote)
   const isDono = useAuthStore((s) => s.isDono())
   const { fontSize, showLineNumbers, wordWrap, setCursor, setSaveState } = useUIStore()
+  const subnoteSide = useUIStore((s) => s.subnoteSide)
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; text: string; start: number; end: number } | null>(null)
@@ -219,9 +220,9 @@ export default function Editor() {
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
       <NoteDetailBar />
       <div className="flex flex-1 overflow-hidden">
-        {/* Painel de subnotas (à esquerda do editor). Oculta-se sozinho quando
-            não há subnotas e o usuário não pode editar a raiz. */}
-        <SubnoteTree />
+        {/* Painel de subnotas — à esquerda OU direita conforme preferência do usuário.
+            Oculta-se sozinho quando não há subnotas e o usuário não pode editar a raiz. */}
+        {subnoteSide === 'left' && <SubnoteTree />}
 
         <div className="flex min-w-0 flex-1 overflow-hidden">
         {showLineNumbers && (
@@ -296,6 +297,8 @@ export default function Editor() {
           }}
         />
         </div>
+
+        {subnoteSide === 'right' && <SubnoteTree />}
       </div>
 
       {/* Fileira de mídias no rodapé da nota (upload / Ctrl+V / arrastar). */}

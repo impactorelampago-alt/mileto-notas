@@ -1,7 +1,17 @@
-import { useMemo, useState } from 'react'
-import { FileText, Plus, X } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import {
+  ArrowLeftRight,
+  FileText,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  X,
+} from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useAuthStore } from '../../stores/auth-store'
+import { useUIStore, SUBNOTE_MIN_WIDTH, SUBNOTE_MAX_WIDTH } from '../../stores/ui-store'
 
 export default function SubnoteTree() {
   const notes = useNotesStore((s) => s.notes)
@@ -12,20 +22,26 @@ export default function SubnoteTree() {
   const deleteNote = useNotesStore((s) => s.deleteNote)
 
   // Permissão da RAIZ define quem pode criar/excluir subnota (a subnota herda o
-  // contexto de permissão da nota raiz). Mesma regra do Editor.isReadOnly, porém
-  // avaliada sobre a raiz: DONO tem controle total; modo "Todos" é só-leitura;
-  // caso contrário vale canEditNote (própria/compartilhada-EDIT/cargo com EDITAR).
+  // contexto de permissão da nota raiz). DONO tem controle total; modo "Todos" e
+  // impersonação são só-leitura; caso contrário vale canEditNote.
   const viewAll = useAuthStore((s) => s.viewAll)
   const viewingAs = useAuthStore((s) => s.viewingAs)
-  // Re-renderiza quando os conjuntos de permissão chegam (canEditNote os lê).
-  useAuthStore((s) => s.editableIds)
+  useAuthStore((s) => s.editableIds) // re-render quando os conjuntos de permissão chegam
   const canEditNote = useAuthStore((s) => s.canEditNote)
   const isDono = useAuthStore((s) => s.isDono())
 
+  // Preferências do painel (lado / colapsado / largura), persistidas no ui-store.
+  const side = useUIStore((s) => s.subnoteSide)
+  const collapsed = useUIStore((s) => s.subnoteCollapsed)
+  const width = useUIStore((s) => s.subnoteWidth)
+  const toggleSide = useUIStore((s) => s.toggleSubnoteSide)
+  const toggleCollapsed = useUIStore((s) => s.toggleSubnoteCollapsed)
+  const setWidth = useUIStore((s) => s.setSubnoteWidth)
+
   const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null)
-  const [isCreating, setIsCreating] = useState(false)
-  const [draftTitle, setDraftTitle] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
+  const dragRef = useRef<number | null>(null)
 
   const activeNote = useMemo(
     () => notes.find((note) => note.id === activeTabId) ?? null,
@@ -46,9 +62,6 @@ export default function SubnoteTree() {
       .sort((a, b) => a.position - b.position || b.updated_at.localeCompare(a.updated_at))
   }, [notes, rootNote])
 
-  // Criar/excluir subnota exige poder EDITAR a raiz E não estar impersonando
-  // (createSubnote bloqueia impersonação no v1 — a RLS de INSERT exige creator_id =
-  // auth.uid()). Esconder +/X sob impersonação evita botão morto.
   const canEditRoot = rootNote ? !viewingAs && (isDono || (!viewAll && canEditNote(rootNote))) : false
 
   if (!activeNote || !rootNote) return null
@@ -56,39 +69,91 @@ export default function SubnoteTree() {
   // subnotas, o painel continua visível para o viewer NAVEGAR entre elas.
   if (subnotes.length === 0 && !canEditRoot) return null
 
+  const sideBorder = side === 'left'
+    ? { borderRight: '1px solid #333333' }
+    : { borderLeft: '1px solid #333333' }
+
+  // COLAPSADO: faixa fina com botão de reabrir (esconde as subnotas sem sumir de vez).
+  if (collapsed) {
+    const OpenIcon = side === 'left' ? PanelLeftOpen : PanelRightOpen
+    return (
+      <aside
+        className="flex shrink-0 flex-col items-center"
+        style={{ width: 32, backgroundColor: '#252526', paddingTop: 8, gap: 8, ...sideBorder }}
+      >
+        <button
+          onClick={toggleCollapsed}
+          className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-zinc-800"
+          style={{ color: '#a1a1aa' }}
+          title="Mostrar subnotas"
+        >
+          <OpenIcon size={15} />
+        </button>
+        <div className="flex flex-col items-center gap-0.5" style={{ color: '#71717a' }} title={`${subnotes.length} subnota${subnotes.length === 1 ? '' : 's'}`}>
+          <FileText size={12} />
+          {subnotes.length > 0 && <span className="text-[10px]">{subnotes.length}</span>}
+        </div>
+      </aside>
+    )
+  }
+
+  const effWidth = dragWidth ?? width
+  const CloseIcon = side === 'left' ? PanelLeftClose : PanelRightClose
+
   const openNote = (noteId: string) => {
     openTab(noteId)
     setActiveTab(noteId)
   }
 
+  // Cria a subnota já e abre — SEM pedir título. O título vem da 1ª linha do
+  // conteúdo (auto-título do Editor); o usuário edita a 1ª linha pra renomear.
   const handleCreate = async () => {
     if (isSubmitting || !canEditRoot) return
     setIsSubmitting(true)
     try {
-      const title = draftTitle.trim() || 'Nova subnota'
-      const created = await createSubnote(rootNote.id, { title })
-      if (created) {
-        setDraftTitle('')
-        setIsCreating(false)
-      }
+      await createSubnote(rootNote.id, { title: 'Sem título' })
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  // Redimensiona arrastando a alça na borda interna (estilo VS Code). Atualiza uma
+  // largura local durante o arraste (fluido) e persiste no ui-store ao soltar.
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = effWidth
+    const onMove = (ev: MouseEvent) => {
+      const delta = side === 'left' ? ev.clientX - startX : startX - ev.clientX
+      const next = Math.min(SUBNOTE_MAX_WIDTH, Math.max(SUBNOTE_MIN_WIDTH, startW + delta))
+      dragRef.current = next
+      setDragWidth(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      if (dragRef.current != null) setWidth(dragRef.current)
+      dragRef.current = null
+      setDragWidth(null)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
   }
 
   const rootActive = activeNote.id === rootNote.id
 
   return (
     <aside
-      className="flex w-[236px] shrink-0 flex-col overflow-hidden"
-      style={{
-        backgroundColor: '#252526',
-        borderRight: '1px solid #333333',
-      }}
+      className="relative flex shrink-0 flex-col"
+      style={{ width: effWidth, backgroundColor: '#252526', ...sideBorder }}
     >
       <div
         className="flex h-9 items-center justify-between"
-        style={{ padding: '0 10px', borderBottom: '1px solid #333333' }}
+        style={{ padding: '0 6px 0 10px', borderBottom: '1px solid #333333' }}
       >
         <div className="flex min-w-0 items-center gap-2">
           <FileText size={13} style={{ color: '#71717a', flexShrink: 0 }} />
@@ -99,16 +164,35 @@ export default function SubnoteTree() {
             {subnotes.length}
           </span>
         </div>
-        {canEditRoot && (
+        <div className="flex shrink-0 items-center gap-0.5">
           <button
-            onClick={() => setIsCreating((value) => !value)}
+            onClick={toggleSide}
             className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-zinc-800"
-            style={{ color: '#a1a1aa' }}
-            title="Nova subnota"
+            style={{ color: '#71717a' }}
+            title={side === 'left' ? 'Mover para a direita' : 'Mover para a esquerda'}
           >
-            <Plus size={14} />
+            <ArrowLeftRight size={13} />
           </button>
-        )}
+          {canEditRoot && (
+            <button
+              onClick={() => void handleCreate()}
+              disabled={isSubmitting}
+              className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-zinc-800 disabled:opacity-40"
+              style={{ color: '#a1a1aa' }}
+              title="Nova subnota"
+            >
+              <Plus size={14} />
+            </button>
+          )}
+          <button
+            onClick={toggleCollapsed}
+            className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-zinc-800"
+            style={{ color: '#71717a' }}
+            title="Esconder subnotas"
+          >
+            <CloseIcon size={14} />
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto" style={{ padding: '8px 8px 10px' }}>
@@ -177,36 +261,20 @@ export default function SubnoteTree() {
               </div>
             )
           })}
-
-          {canEditRoot && isCreating && (
-            <div className="mt-1 flex items-center gap-1">
-              <input
-                value={draftTitle}
-                onChange={(event) => setDraftTitle(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void handleCreate()
-                  if (event.key === 'Escape') {
-                    setDraftTitle('')
-                    setIsCreating(false)
-                  }
-                }}
-                autoFocus
-                placeholder="Título da subnota"
-                className="min-w-0 flex-1 rounded-md border bg-zinc-900 px-2 py-1 text-[12px] outline-none"
-                style={{ borderColor: '#3d3d3d', color: '#d4d4d8' }}
-              />
-              <button
-                onClick={() => void handleCreate()}
-                disabled={isSubmitting}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-zinc-800 disabled:opacity-40"
-                style={{ color: '#34d399' }}
-                title="Criar subnota"
-              >
-                <Plus size={14} />
-              </button>
-            </div>
-          )}
         </div>
+      </div>
+
+      {/* Alça de redimensionamento na borda interna (entre o painel e o editor). */}
+      <div
+        onMouseDown={startResize}
+        className="group absolute top-0 z-10"
+        style={{ bottom: 0, width: 8, cursor: 'col-resize', ...(side === 'left' ? { right: -4 } : { left: -4 }) }}
+        title="Arraste para redimensionar"
+      >
+        <div
+          className={`mx-auto h-full transition-colors ${dragWidth != null ? 'bg-emerald-500' : 'group-hover:bg-emerald-500/60'}`}
+          style={{ width: 2 }}
+        />
       </div>
     </aside>
   )
