@@ -69,37 +69,6 @@ export default function SubnoteTree() {
   // subnotas, o painel continua visível para o viewer NAVEGAR entre elas.
   if (subnotes.length === 0 && !canEditRoot) return null
 
-  const sideBorder = side === 'left'
-    ? { borderRight: '1px solid #333333' }
-    : { borderLeft: '1px solid #333333' }
-
-  // COLAPSADO: faixa fina com botão de reabrir (esconde as subnotas sem sumir de vez).
-  if (collapsed) {
-    const OpenIcon = side === 'left' ? PanelLeftOpen : PanelRightOpen
-    return (
-      <aside
-        className="flex shrink-0 flex-col items-center"
-        style={{ width: 32, backgroundColor: '#252526', paddingTop: 8, gap: 8, ...sideBorder }}
-      >
-        <button
-          onClick={toggleCollapsed}
-          className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-zinc-800"
-          style={{ color: '#a1a1aa' }}
-          title="Mostrar subnotas"
-        >
-          <OpenIcon size={15} />
-        </button>
-        <div className="flex flex-col items-center gap-0.5" style={{ color: '#71717a' }} title={`${subnotes.length} subnota${subnotes.length === 1 ? '' : 's'}`}>
-          <FileText size={12} />
-          {subnotes.length > 0 && <span className="text-[10px]">{subnotes.length}</span>}
-        </div>
-      </aside>
-    )
-  }
-
-  const effWidth = dragWidth ?? width
-  const CloseIcon = side === 'left' ? PanelLeftClose : PanelRightClose
-
   const openNote = (noteId: string) => {
     openTab(noteId)
     setActiveTab(noteId)
@@ -116,6 +85,84 @@ export default function SubnoteTree() {
       setIsSubmitting(false)
     }
   }
+
+  const rootActive = activeNote.id === rootNote.id
+  const sideBorder = side === 'left'
+    ? { borderRight: '1px solid #333333' }
+    : { borderLeft: '1px solid #333333' }
+
+  // COLAPSADO: faixa fina que vira uma MINI-NAVEGAÇÃO — raiz + subnotas como ícones
+  // clicáveis (ativa destacada, título no hover), pra alternar rápido sem expandir.
+  if (collapsed) {
+    const OpenIcon = side === 'left' ? PanelLeftOpen : PanelRightOpen
+    return (
+      <aside
+        className="flex shrink-0 flex-col items-center"
+        style={{ width: 38, backgroundColor: '#252526', paddingTop: 6, ...sideBorder }}
+      >
+        <button
+          onClick={toggleCollapsed}
+          className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-zinc-800"
+          style={{ color: '#a1a1aa' }}
+          title="Expandir subnotas"
+        >
+          <OpenIcon size={15} />
+        </button>
+        <div style={{ width: 18, height: 1, backgroundColor: '#333333', margin: '5px 0 6px' }} />
+
+        <div className="no-scrollbar flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto" style={{ paddingBottom: 8 }}>
+          {/* Nota raiz */}
+          <button
+            onClick={() => openNote(rootNote.id)}
+            className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-zinc-800"
+            style={{
+              backgroundColor: rootActive ? '#163126' : 'transparent',
+              border: `1px solid ${rootActive ? '#245642' : 'transparent'}`,
+            }}
+            title={rootNote.title || 'Sem título'}
+          >
+            <span
+              style={{ width: 8, height: 8, borderRadius: 999, backgroundColor: rootActive ? '#10b981' : '#71717a' }}
+            />
+          </button>
+
+          {/* Subnotas */}
+          {subnotes.map((note) => {
+            const isActive = activeNote.id === note.id
+            return (
+              <button
+                key={note.id}
+                onClick={() => openNote(note.id)}
+                className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-zinc-800"
+                style={{
+                  backgroundColor: isActive ? '#163126' : 'transparent',
+                  border: `1px solid ${isActive ? '#245642' : 'transparent'}`,
+                }}
+                title={note.title || 'Sem título'}
+              >
+                <FileText size={13} style={{ color: isActive ? '#34d399' : '#71717a' }} />
+              </button>
+            )
+          })}
+
+          {canEditRoot && (
+            <button
+              onClick={() => void handleCreate()}
+              disabled={isSubmitting}
+              className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-zinc-800 disabled:opacity-40"
+              style={{ color: '#71717a' }}
+              title="Nova subnota"
+            >
+              <Plus size={14} />
+            </button>
+          )}
+        </div>
+      </aside>
+    )
+  }
+
+  const effWidth = dragWidth ?? width
+  const CloseIcon = side === 'left' ? PanelLeftClose : PanelRightClose
 
   // Redimensiona arrastando a alça na borda interna (estilo VS Code). Atualiza uma
   // largura local durante o arraste (fluido) e persiste no ui-store ao soltar.
@@ -143,8 +190,6 @@ export default function SubnoteTree() {
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   }
-
-  const rootActive = activeNote.id === rootNote.id
 
   return (
     <aside
