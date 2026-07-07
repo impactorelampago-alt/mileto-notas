@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores/auth-store'
 import AddAnnotationToCompanyModal from '../ui/AddAnnotationToCompanyModal'
 import NoteMediaStrip from './NoteMediaStrip'
 import NoteDetailBar from './NoteDetailBar'
+import SubnoteTree from './SubnoteTree'
 
 export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
@@ -218,6 +219,11 @@ export default function Editor() {
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
       <NoteDetailBar />
       <div className="flex flex-1 overflow-hidden">
+        {/* Painel de subnotas (à esquerda do editor). Oculta-se sozinho quando
+            não há subnotas e o usuário não pode editar a raiz. */}
+        <SubnoteTree />
+
+        <div className="flex min-w-0 flex-1 overflow-hidden">
         {showLineNumbers && (
           <div
             ref={lineNumbersRef}
@@ -272,7 +278,7 @@ export default function Editor() {
           spellCheck={false}
           readOnly={isReadOnly}
           wrap={wordWrap ? 'soft' : 'off'}
-          className="editor-textarea flex-1 resize-none outline-none"
+          className="editor-textarea min-w-0 flex-1 resize-none outline-none"
           style={{
             backgroundColor: '#2d2d2d',
             color: '#cccccc',
@@ -289,6 +295,7 @@ export default function Editor() {
             paddingBottom: '22px',
           }}
         />
+        </div>
       </div>
 
       {/* Fileira de mídias no rodapé da nota (upload / Ctrl+V / arrastar). */}

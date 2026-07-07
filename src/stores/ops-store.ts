@@ -719,6 +719,22 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         .filter((n) => n.task_id !== null && taskIds.includes(n.task_id))
         .map((n) => n.id),
     )
+
+    // Expande para incluir subnotas: as notas-raiz removidas acima têm task_id; as
+    // subnotas têm task_id=null e não entram no filtro por taskIds, mas foram
+    // apagadas no banco pelo ON DELETE CASCADE do parent_note_id. Replicamos esse
+    // cascade no estado local para não deixar subnota órfã. Ponto-fixo cobre N níveis.
+    let expandedDeletedIds = true
+    while (expandedDeletedIds) {
+      expandedDeletedIds = false
+      for (const note of notesStore.notes) {
+        if (note.parent_note_id && deletedNoteIds.has(note.parent_note_id) && !deletedNoteIds.has(note.id)) {
+          deletedNoteIds.add(note.id)
+          expandedDeletedIds = true
+        }
+      }
+    }
+
     useNotesStore.setState((s) => ({
       notes: s.notes.filter((n) => !deletedNoteIds.has(n.id)),
       openTabs: s.openTabs.filter((id) => !deletedNoteIds.has(id)),

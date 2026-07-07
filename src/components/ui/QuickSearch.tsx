@@ -22,10 +22,14 @@ export default function QuickSearch() {
   const filtered = useMemo(() => {
     if (!query.trim()) return notes.slice(0, 20)
     const lower = query.toLowerCase()
-    return notes.filter((n) =>
-      n.title.toLowerCase().includes(lower) ||
-      n.content.toLowerCase().includes(lower)
-    ).slice(0, 20)
+    return notes.filter((n) => {
+      const parent = n.parent_note_id ? notes.find((item) => item.id === n.parent_note_id) : null
+      return (
+        n.title.toLowerCase().includes(lower) ||
+        n.content.toLowerCase().includes(lower) ||
+        (parent?.title.toLowerCase().includes(lower) ?? false)
+      )
+    }).slice(0, 20)
   }, [query, notes])
 
   useEffect(() => {
@@ -44,7 +48,11 @@ export default function QuickSearch() {
 
   const handleSelect = (noteId: string) => {
     const note = notes.find((n) => n.id === noteId)
-    const section = note ? getSectionForNote(note.task_id) : null
+    // Subnota (parent_note_id != null) tem task_id null → resolve a seção pela raiz.
+    const rootNote = note?.parent_note_id
+      ? notes.find((n) => n.id === note.parent_note_id) ?? note
+      : note
+    const section = rootNote ? getSectionForNote(rootNote.task_id) : null
 
     if (section) {
       setActiveSectionId(section.key_suffix)
@@ -121,7 +129,9 @@ export default function QuickSearch() {
             </div>
           ) : (
             filtered.map((note, i) => {
-              const section = getSectionForNote(note.task_id)
+              const parent = note.parent_note_id ? notes.find((n) => n.id === note.parent_note_id) : null
+              const rootNote = parent ?? note
+              const section = getSectionForNote(rootNote.task_id)
               return (
                 <button
                   key={note.id}
@@ -132,7 +142,9 @@ export default function QuickSearch() {
                 >
                   <FileText size={14} style={{ color: '#6d6d75', flexShrink: 0 }} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] text-zinc-200">{note.title || 'Sem título'}</div>
+                    <div className="truncate text-[13px] text-zinc-200">
+                      {parent ? `${parent.title || 'Sem título'} / ${note.title || 'Sem título'}` : (note.title || 'Sem título')}
+                    </div>
                     {note.content && (
                       <div className="mt-0.5 truncate text-[11px] text-zinc-600">
                         {note.content.slice(0, 80)}

@@ -262,6 +262,11 @@ export default function MainApp() {
 
   if (!isAuthenticated) return null
 
+  // Nota raiz da aba ativa: se a ativa é subnota, a raiz é o pai; senão é ela mesma.
+  // Usada pelos modais que operam no nível da raiz (compartilhar/conectar).
+  const activeNote = activeTabId ? notes.find((n) => n.id === activeTabId) ?? null : null
+  const activeRootNoteId = activeNote?.parent_note_id ?? activeTabId
+
   const handleCategoryConfirm = (name: string, color: string) => {
     setShowCategoryModal(false)
     void createCategory(name, color)
@@ -343,19 +348,19 @@ export default function MainApp() {
         />
       )}
 
-      {showConnectModal && activeTabId && (
+      {showConnectModal && activeRootNoteId && (
         <ConnectModal
-          key={activeTabId}
-          noteId={activeTabId}
-          currentClientId={notes.find((n) => n.id === activeTabId)?.client_id ?? null}
-          currentTaskId={notes.find((n) => n.id === activeTabId)?.task_id ?? null}
+          key={activeRootNoteId}
+          noteId={activeRootNoteId}
+          currentClientId={notes.find((n) => n.id === activeRootNoteId)?.client_id ?? null}
+          currentTaskId={notes.find((n) => n.id === activeRootNoteId)?.task_id ?? null}
           onClose={() => setShowConnectModal(false)}
         />
       )}
 
-      {showCollaboratorsModal && activeTabId && (
+      {showCollaboratorsModal && activeRootNoteId && (
         <CollaboratorsModal
-          noteId={activeTabId}
+          noteId={activeRootNoteId}
           onClose={() => setShowCollaboratorsModal(false)}
         />
       )}

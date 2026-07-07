@@ -18,6 +18,61 @@ let _notesToken: string | null = null
 let _deletionInProgress = false
 
 /**
+ * Normalização canônica de uma nota vinda do banco/realtime: garante prioridade
+ * válida e defaults de parent_note_id/position (subnotas). O spread `...note`
+ * preserva flags de front (is_shared_with_me/shared_permission) quando presentes.
+ */
+function normalizeNote(note: Note): Note {
+  return {
+    ...note,
+    priority: normalizePriority(note.priority),
+    parent_note_id: note.parent_note_id ?? null,
+    position: note.position ?? 0,
+  }
+}
+
+/**
+ * Expande `rootId` para o conjunto de ids da subárvore (raiz + subnotas). Usado no
+ * deleteNote/deleteSection: o banco tem ON DELETE CASCADE em parent_note_id, então
+ * ao apagar a raiz o Postgres já remove as subnotas — este helper só espelha isso
+ * no estado local (notes/abas). Fixpoint porque a ordem do array não é garantida.
+ */
+function collectNoteTreeIds(notes: Note[], rootId: string): Set<string> {
+  const ids = new Set<string>([rootId])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const note of notes) {
+      if (note.parent_note_id && ids.has(note.parent_note_id) && !ids.has(note.id)) {
+        ids.add(note.id)
+        changed = true
+      }
+    }
+  }
+  return ids
+}
+
+/**
+ * Subnota herda as flags de compartilhamento da RAIZ: a permissão de uma subnota é a
+ * da nota-raiz (espelha a RLS user_can_edit_note(parent)). Sem isto,
+ * is_shared_with_me/shared_permission nunca chegam à subnota (só a raiz está em
+ * sharedWithMeNotes; subnota tem task_id=null), então canEditNote(subnota) daria false
+ * para o colaborador EDIT e o editor travaria em só-leitura embora o back-end permita
+ * o UPDATE. Muta as notas em lugar.
+ */
+function inheritSubnoteSharedFlags(notes: Note[]): void {
+  const byId = new Map(notes.map((n) => [n.id, n]))
+  for (const n of notes) {
+    if (!n.parent_note_id) continue
+    const root = byId.get(n.parent_note_id)
+    if (root?.is_shared_with_me) {
+      n.is_shared_with_me = true
+      n.shared_permission = root.shared_permission
+    }
+  }
+}
+
+/**
  * Geração de visão: incrementada a cada troca de conta/impersonação/logout
  * (setViewingAs/setViewAll/signOut chamam bumpViewGeneration). Cada loader captura
  * a geração no início e descarta o resultado se ela mudou antes do set — evita
@@ -215,6 +270,7 @@ interface NotesState {
   syncNotesFromTaskDescriptions: () => void
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
+  createSubnote: (parentNoteId: string, options?: { title?: string }) => Promise<Note | null>
   updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'priority' | 'category_id' | 'is_pinned' | 'is_archived' | 'client_id' | 'task_id'>>) => Promise<void>
   completeNote: (noteId: string) => Promise<void>
   /** Alterna concluída/pendente: conclui (status→DONE) ou desfaz (volta à origem). */
@@ -227,6 +283,9 @@ interface NotesState {
   closeAllTabs: () => void
   setActiveTab: (noteId: string) => void
   getNotesByCategory: (categoryId: string | null) => Note[]
+  getRootNotes: () => Note[]
+  getSubnotes: (parentNoteId: string) => Note[]
+  getRootNoteFor: (noteId: string) => Note | null
   getActiveNote: () => Note | null
   fetchNoteById: (noteId: string) => Promise<Note | null>
   noteIdsWithCollaborators: Set<string>
@@ -261,11 +320,11 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       // ler tudo). Visão geral de leitura — agrupadas por categoria via task_id.
       if (viewAll) {
         const all = await notesFetch<Note>(
-          `notes?select=*&is_archived=eq.false&order=is_pinned.desc,updated_at.desc`,
+          `notes?select=*&is_archived=eq.false&order=is_pinned.desc,position.asc,updated_at.desc`,
         )
         const localAll = new Map(get().notes.map((n) => [n.id, n]))
         const mergedAll = all.map((note) => {
-          const base: Note = { ...note, priority: normalizePriority(note.priority) }
+          const base: Note = normalizeNote(note)
           const local = localAll.get(note.id)
           if (local && tsNewer(local.updated_at, note.updated_at)) {
             base.content = local.content
@@ -283,7 +342,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
       // (1) Minhas notas (ou as da conta visualizada em impersonação)
       const own = await notesFetch<Note>(
-        `notes?select=*&creator_id=eq.${userId}&is_archived=eq.false&order=is_pinned.desc,updated_at.desc`,
+        `notes?select=*&creator_id=eq.${userId}&is_archived=eq.false&order=is_pinned.desc,position.asc,updated_at.desc`,
       )
 
       // (2)/(3) Notas compartilhadas comigo — só fora de impersonação (RLS autoriza)
@@ -340,6 +399,21 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         }
       }
 
+      // Preserva SUBNOTAS já carregadas sob demanda (fetchNoteById) que estas queries
+      // não trazem: uma subnota estrangeira (de nota-raiz compartilhada comigo, criada
+      // por outra pessoa) tem task_id=null e creator_id de outro, escapando do
+      // preservador de tasks visíveis acima. Sem isto, abrir uma subnota compartilhada
+      // e depois qualquer loadNotes (foco/realtime/shares) faria a subnota "sumir".
+      for (const n of get().notes) {
+        if (
+          n.parent_note_id &&
+          !byId.has(n.id) &&
+          (byId.has(n.parent_note_id) || n.creator_id !== userId)
+        ) {
+          byId.set(n.id, n)
+        }
+      }
+
       const sharedNotePerm = shareState.sharedWithMeNotes
       const sharedCatKeys = Object.keys(shareState.sharedWithMeCategories)
       const sharedCatPerm = shareState.sharedWithMeCategories
@@ -348,7 +422,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
       const localById = new Map(get().notes.map((n) => [n.id, n]))
       const merged = Array.from(byId.values()).map((note) => {
-        const base: Note = { ...note, priority: normalizePriority(note.priority) }
+        const base: Note = normalizeNote(note)
         // Preserva edição LOCAL ainda não sincronizada (updated_at local mais
         // novo) — senão um reload (foco/realtime/polling) sobrescreveria o que o
         // usuário acabou de digitar e que ainda está no debounce de save.
@@ -373,6 +447,9 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         }
         return base
       })
+
+      // Subnotas herdam as flags de compartilhamento da raiz (permissão = da raiz).
+      inheritSubnoteSharedFlags(merged)
 
       // Identidade ainda é a mesma? (troca de conta durante os awaits acima)
       if (_viewGeneration !== gen) { set({ isLoading: false }); return }
@@ -441,7 +518,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       let added = 0
       for (const note of fetched) {
         if (byId.has(note.id)) continue
-        const base: Note = { ...note, priority: normalizePriority(note.priority) }
+        const base: Note = normalizeNote(note)
         if (notImpersonating && note.creator_id !== userId) {
           let perm: NotePermission | undefined = sharedNotePerm[note.id]
           if (!perm && note.task_id) {
@@ -652,6 +729,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       title,
       content: '',
       priority: 'LOW',
+      parent_note_id: null,
+      position: 0,
       category_id: categoryId ?? null,
       client_id: null,
       task_id: taskId,
@@ -673,6 +752,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         content: optimistic.content,
         category_id: optimistic.category_id,
         priority: optimistic.priority,
+        parent_note_id: optimistic.parent_note_id,
+        position: optimistic.position,
         creator_id: userId,
         task_id: taskId,
         is_pinned: false,
@@ -691,7 +772,111 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       return null
     }
 
-    const created = data as Note
+    const created = normalizeNote(data as Note)
+    set((s) => ({
+      notes: s.notes.map((n) => (n.id === optimistic.id ? created : n)),
+      openTabs: s.openTabs.map((id) => (id === optimistic.id ? created.id : id)),
+      activeTabId: s.activeTabId === optimistic.id ? created.id : s.activeTabId,
+    }))
+    return created
+  },
+
+  createSubnote: async (parentNoteId, options = {}) => {
+    const authState = useAuthStore.getState()
+    // "Todos" é somente-leitura por design, exceto DONO (rede de segurança no store).
+    if (authState.viewAll && !authState.isDono()) return null
+    // Impersonação (v1): a RLS de INSERT de subnota exige creator_id = auth.uid()
+    // (policy base) E user_can_edit_note(parent) (policy RESTRICTIVE). Com viewingAs,
+    // creator_id seria viewingAs.id != auth.uid() → 403, e não há RPC
+    // notas_create_subnote_for. Bloqueia criar subnota em conta impersonada.
+    if (authState.viewingAs) return null
+
+    const userId = authState.getEffectiveUserId()
+    if (!userId) return null
+
+    const notes = get().notes
+    const parentNote = notes.find((n) => n.id === parentNoteId)
+    if (!parentNote) return null
+
+    // Nesting de 1 nível: o pai de uma subnota é sempre a nota-raiz.
+    const rootNote = parentNote.parent_note_id
+      ? notes.find((n) => n.id === parentNote.parent_note_id)
+      : parentNote
+    if (!rootNote) return null
+
+    // Herda o contexto de permissão da raiz: só cria subnota quem pode EDITAR a raiz.
+    // Espelha o WITH CHECK user_can_edit_note(parent_note_id) da RLS RESTRICTIVE.
+    if (!authState.canEditNote(rootNote)) {
+      console.warn('[notes] createSubnote: sem permissão de edição na raiz', rootNote.id)
+      return null
+    }
+
+    const gen = _viewGeneration
+    const { title = 'Nova subnota' } = options
+    const prevActiveTabId = get().activeTabId
+    const siblings = notes.filter((n) => n.parent_note_id === rootNote.id)
+    const position = siblings.length > 0
+      ? Math.max(...siblings.map((n) => n.position)) + 1
+      : 0
+    const now = new Date().toISOString()
+
+    const optimistic: Note = {
+      id: crypto.randomUUID(),
+      title,
+      content: '',
+      priority: 'LOW',
+      parent_note_id: rootNote.id,
+      position,
+      category_id: rootNote.category_id,
+      client_id: rootNote.client_id,
+      task_id: null,
+      creator_id: userId,
+      is_pinned: false,
+      is_archived: false,
+      created_at: now,
+      updated_at: now,
+    }
+
+    set((s) => ({ notes: [...s.notes, optimistic] }))
+    get().openTab(optimistic.id)
+
+    const { data, error } = await supabase
+      .from('notes')
+      .insert({
+        title: optimistic.title,
+        content: optimistic.content,
+        priority: optimistic.priority,
+        parent_note_id: optimistic.parent_note_id,
+        position: optimistic.position,
+        category_id: optimistic.category_id,
+        client_id: optimistic.client_id,
+        creator_id: userId,
+        is_pinned: false,
+        is_archived: false,
+      })
+      .select()
+      .single()
+
+    const rollback = () => set((s) => ({
+      notes: s.notes.filter((n) => n.id !== optimistic.id),
+      openTabs: s.openTabs.filter((id) => id !== optimistic.id),
+      activeTabId: s.activeTabId === optimistic.id ? prevActiveTabId : s.activeTabId,
+    }))
+
+    if (error) {
+      console.error('[notes] createSubnote:', error.message)
+      rollback()
+      return null
+    }
+
+    // Troca de conta durante o insert invalida o resultado: descarta a subnota
+    // otimista para não deixar dado da conta antiga na tela da nova.
+    if (_viewGeneration !== gen) {
+      rollback()
+      return null
+    }
+
+    const created = normalizeNote(data as Note)
     set((s) => ({
       notes: s.notes.map((n) => (n.id === optimistic.id ? created : n)),
       openTabs: s.openTabs.map((id) => (id === optimistic.id ? created.id : id)),
@@ -868,6 +1053,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   completeNote: async (noteId) => {
     if (useAuthStore.getState().viewAll) return // "Todos" é somente-leitura
     const note = get().notes.find((n) => n.id === noteId)
+    // Subnota não tem task no Ops (task_id sempre null) — não pode ser concluída.
+    if (note?.parent_note_id) return
     const taskId = note?.task_id
     if (!taskId) {
       console.warn('[notes] completeNote: nota sem task_id', noteId)
@@ -902,6 +1089,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   toggleComplete: async (noteId) => {
     if (useAuthStore.getState().viewAll) return // "Todos" é somente-leitura
     const note = get().notes.find((n) => n.id === noteId)
+    if (note?.parent_note_id) return // subnota não conclui (sem task)
     const taskId = note?.task_id
     if (!taskId) return
     const task = useOpsStore.getState().tasks.find((t) => t.id === taskId)
@@ -972,13 +1160,14 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           return
         }
         set((s) => {
-          const newTabs = s.openTabs.filter((t) => t !== id)
+          const deletedIds = collectNoteTreeIds(s.notes, id)
+          const firstDeletedTabIndex = s.openTabs.findIndex((tabId) => deletedIds.has(tabId))
+          const newTabs = s.openTabs.filter((tabId) => !deletedIds.has(tabId))
           let newActive = s.activeTabId
-          if (s.activeTabId === id) {
-            const idx = s.openTabs.indexOf(id)
-            newActive = newTabs[idx] ?? newTabs[idx - 1] ?? null
+          if (s.activeTabId && deletedIds.has(s.activeTabId)) {
+            newActive = newTabs[firstDeletedTabIndex] ?? newTabs[firstDeletedTabIndex - 1] ?? null
           }
-          return { notes: s.notes.filter((n) => n.id !== id), openTabs: newTabs, activeTabId: newActive }
+          return { notes: s.notes.filter((n) => !deletedIds.has(n.id)), openTabs: newTabs, activeTabId: newActive }
         })
         console.log('[notes] deleteNote: nota de outra pessoa apagada via RPC')
       } finally {
@@ -1020,14 +1209,15 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
       // 3. Atualiza UI depois que o banco confirmou
       set((s) => {
-        const newTabs = s.openTabs.filter((t) => t !== id)
+        const deletedIds = collectNoteTreeIds(s.notes, id)
+        const firstDeletedTabIndex = s.openTabs.findIndex((tabId) => deletedIds.has(tabId))
+        const newTabs = s.openTabs.filter((tabId) => !deletedIds.has(tabId))
         let newActive = s.activeTabId
-        if (s.activeTabId === id) {
-          const idx = s.openTabs.indexOf(id)
-          newActive = newTabs[idx] ?? newTabs[idx - 1] ?? null
+        if (s.activeTabId && deletedIds.has(s.activeTabId)) {
+          newActive = newTabs[firstDeletedTabIndex] ?? newTabs[firstDeletedTabIndex - 1] ?? null
         }
         return {
-          notes: s.notes.filter((n) => n.id !== id),
+          notes: s.notes.filter((n) => !deletedIds.has(n.id)),
           openTabs: newTabs,
           activeTabId: newActive,
         }
@@ -1061,8 +1251,26 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
   getNotesByCategory: (categoryId) => {
     const { notes } = get()
-    if (categoryId === null) return notes
-    return notes.filter((n) => n.category_id === categoryId)
+    const rootNotes = notes.filter((n) => n.parent_note_id === null)
+    if (categoryId === null) return rootNotes
+    return rootNotes.filter((n) => n.category_id === categoryId)
+  },
+
+  getRootNotes: () => {
+    return get().notes.filter((n) => n.parent_note_id === null)
+  },
+
+  getSubnotes: (parentNoteId) => {
+    return get().notes
+      .filter((n) => n.parent_note_id === parentNoteId)
+      .sort((a, b) => a.position - b.position || b.updated_at.localeCompare(a.updated_at))
+  },
+
+  getRootNoteFor: (noteId) => {
+    const note = get().notes.find((n) => n.id === noteId)
+    if (!note) return null
+    if (!note.parent_note_id) return note
+    return get().notes.find((n) => n.id === note.parent_note_id) ?? null
   },
 
   getActiveNote: () => {
@@ -1072,20 +1280,82 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   },
 
   fetchNoteById: async (noteId) => {
+    // Captura a geração de visão: se a conta/visão trocar durante os awaits abaixo,
+    // descartamos o resultado antes do set (não injeta dados da visão antiga na nova).
+    const gen = _viewGeneration
     const existing = get().notes.find((n) => n.id === noteId)
-    if (existing) return existing
+    if (existing) {
+      // Já em memória: só retorna cedo se a ÁRVORE (subnotas) também já estiver
+      // carregada. Uma raiz compartilhada entra via loadNotes (shares por id) SEM as
+      // subnotas — sem esta checagem, fetchNoteById(raiz) retornaria cedo e o painel
+      // de subnotas ficaria vazio (contador 0) mesmo com subnotas no banco.
+      const rootId = existing.parent_note_id ?? existing.id
+      const hasTree = get().notes.some((n) => n.parent_note_id === rootId)
+      if (hasTree) return existing
+    }
 
-    const { data, error } = await supabase
+    let note: Note
+    if (existing) {
+      note = existing
+    } else {
+      const { data, error } = await supabase
+        .from('notes')
+        .select('*')
+        .eq('id', noteId)
+        .single()
+      if (error || !data) return null
+      note = normalizeNote(data as Note)
+    }
+    const rootNoteId = note.parent_note_id ?? note.id
+
+    // Carrega a árvore inteira (raiz + subnotas) de uma vez.
+    const { data: relatedData } = await supabase
       .from('notes')
       .select('*')
-      .eq('id', noteId)
-      .single()
+      .or(`id.eq.${rootNoteId},parent_note_id.eq.${rootNoteId}`)
+      .eq('is_archived', false)
+      .order('position', { ascending: true })
 
-    if (error || !data) return null
+    const relatedNotes = (relatedData ?? [note]).map((item) => normalizeNote(item as Note))
 
-    const note = { ...(data as Note), priority: normalizePriority((data as Note).priority) }
-    set((state) => ({ notes: [note, ...state.notes] }))
-    return note
+    // Troca de conta/visão durante os awaits acima invalida este resultado.
+    if (_viewGeneration !== gen) return null
+
+    set((state) => {
+      const merged = new Map<string, Note>()
+      for (const existingNote of state.notes) merged.set(existingNote.id, existingNote)
+      for (const relatedNote of relatedNotes) {
+        const local = merged.get(relatedNote.id)
+        if (
+          local &&
+          (_pendingDraftIds.has(relatedNote.id) || tsNewer(local.updated_at, relatedNote.updated_at))
+        ) {
+          // Preserva a edição local ainda não sincronizada; aceita os metadados de
+          // árvore (parent_note_id/position) e conserva as flags de compartilhamento.
+          merged.set(relatedNote.id, {
+            ...relatedNote,
+            content: local.content,
+            title: local.title,
+            updated_at: local.updated_at,
+            is_shared_with_me: local.is_shared_with_me,
+            shared_permission: local.shared_permission,
+          })
+        } else {
+          merged.set(
+            relatedNote.id,
+            local
+              ? { ...relatedNote, is_shared_with_me: local.is_shared_with_me, shared_permission: local.shared_permission }
+              : relatedNote,
+          )
+        }
+      }
+      const arr = Array.from(merged.values())
+      // Subnotas herdam as flags de compartilhamento da raiz (permissão = da raiz).
+      inheritSubnoteSharedFlags(arr)
+      return { notes: arr }
+    })
+
+    return get().notes.find((n) => n.id === note.id) ?? note
   },
 
   noteIdsWithCollaborators: new Set<string>(),
@@ -1133,7 +1403,15 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
             return {
               notes: state.notes.map((n) =>
                 n.id === updated.id
-                  ? { ...n, title: updated.title, content: updated.content, updated_at: updated.updated_at }
+                  ? {
+                      ...n,
+                      title: updated.title,
+                      content: updated.content,
+                      priority: normalizePriority(updated.priority),
+                      parent_note_id: updated.parent_note_id ?? null,
+                      position: updated.position ?? 0,
+                      updated_at: updated.updated_at,
+                    }
                   : n,
               ),
             }

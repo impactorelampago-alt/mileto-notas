@@ -37,6 +37,8 @@ export interface Note {
   title: string
   content: string
   priority: NotePriority
+  parent_note_id: string | null
+  position: number
   category_id: string | null
   client_id: string | null
   task_id: string | null

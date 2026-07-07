@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Check, CheckCircle2, ChevronLeft, ChevronRight, Pin, Plus, Users, X, LogOut } from 'lucide-react'
+import { Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, Pin, Plus, Users, X, LogOut } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore, SYSTEM_SUFFIXES } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
@@ -143,7 +143,7 @@ export default function TabBar() {
       groups.set(section.key_suffix, { key: section.key_suffix, label: section.label, color: section.color, noteIds: [] })
     }
     for (const note of notes) {
-      if (!note.task_id) continue
+      if (!note.task_id || note.parent_note_id !== null) continue
       const sectionKey = taskToSectionMap.get(note.task_id)
       if (!sectionKey) continue
       groups.get(sectionKey)?.noteIds.push(note.id)
@@ -232,7 +232,13 @@ export default function TabBar() {
     // categoria FEITAS por você, depois do boot.
     if (wasNull) return
     if (orderedNoteIds.length === 0) return
-    if (activeTabId && orderedNoteIds.includes(activeTabId)) return
+    // Se a aba ativa é uma SUBNOTA, ela não está em orderedNoteIds (subnotas são
+    // filtradas dos cards). Compara pela RAIZ — senão trocar de seção via QuickSearch
+    // (que ativa a subnota) dispararia o auto-abrir e sobrescreveria a subnota.
+    const activeRootId = activeTabId
+      ? (notes.find((n) => n.id === activeTabId)?.parent_note_id ?? activeTabId)
+      : null
+    if (activeRootId && orderedNoteIds.includes(activeRootId)) return
     const mostRecent = [...orderedNoteIds].sort((a, b) => {
       const ua = notes.find((n) => n.id === a)?.updated_at ?? ''
       const ub = notes.find((n) => n.id === b)?.updated_at ?? ''
@@ -240,6 +246,12 @@ export default function TabBar() {
     })[0]
     if (mostRecent) { openTab(mostRecent); setActiveTab(mostRecent) }
   }, [activeSectionId, orderedNoteIds, activeTabId, notes, openTab, setActiveTab])
+
+  // Se a aba ativa é uma subnota, ela não tem card próprio — destaca o card da RAIZ
+  // para o usuário saber em qual nota está enquanto edita a subnota.
+  const activeRootTabId = activeTabId
+    ? (notes.find((n) => n.id === activeTabId)?.parent_note_id ?? activeTabId)
+    : null
 
   const startRename = (noteId: string, currentTitle: string) => {
     setRenamingNoteId(noteId)
@@ -340,7 +352,7 @@ export default function TabBar() {
               const note = notes.find((item) => item.id === noteId)
               if (!note) return null
 
-              const isActive = noteId === activeTabId
+              const isActive = noteId === activeTabId || noteId === activeRootTabId
               const isHovered = noteId === hoveredTab
               const priority = normalizePriority(note.priority)
               const priorityColors = NOTE_PRIORITY_COLORS[priority]
@@ -351,6 +363,7 @@ export default function TabBar() {
               // prioridade e o renomear, que escrevem na task/nota de terceiros.
               // DONO tem controle total (edita em qualquer modo, inclusive "Todos").
               const editable = isDono || (!viewAll && canEditNote(note))
+              const subnoteCount = notes.filter((item) => item.parent_note_id === noteId).length
 
               return (
                 <div
@@ -457,6 +470,17 @@ export default function TabBar() {
                       }}
                     >
                       {note.title || 'Sem título'}
+                    </span>
+                  )}
+
+                  {subnoteCount > 0 && (
+                    <span
+                      className="flex shrink-0 items-center gap-0.5"
+                      style={{ color: isActive ? '#34d399' : '#71717a', fontSize: '10px' }}
+                      title={`${subnoteCount} subnota${subnoteCount === 1 ? '' : 's'}`}
+                    >
+                      <FileText size={9} />
+                      {subnoteCount}
                     </span>
                   )}
 
