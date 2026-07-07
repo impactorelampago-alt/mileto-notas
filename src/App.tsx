@@ -75,8 +75,11 @@ export default function App() {
   return (
     <>
       {content}
-      {/* Banner de update só depois de logado (na tela de Login não há barra). */}
-      {isAuthenticated && <UpdateBanner />}
+      {/* Banner de update mostrado SEMPRE — inclusive na tela de login. Se uma
+          versão sair com backend/rede quebrada, o usuário não consegue logar; sem
+          isto ele ficaria preso sem ver o botão de atualizar (catch-22). O card é
+          fixed (canto inferior) e o update-store.init() já roda sem depender de login. */}
+      <UpdateBanner />
     </>
   )
 }
