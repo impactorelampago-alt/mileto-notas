@@ -1462,6 +1462,11 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       void supabase.removeChannel(existing)
     }
 
+    // Raiz da nota ativa (subnota → sua raiz; raiz → ela mesma). As SUBNOTAS a
+    // observar ao vivo são as com parent_note_id = rootId.
+    const activeNote = get().notes.find((n) => n.id === noteId)
+    const rootId = activeNote?.parent_note_id ?? noteId
+
     const channel = supabase
       .channel(`note:${noteId}`)
       .on(
@@ -1499,6 +1504,46 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
                   : n,
               ),
             }
+          })
+        },
+      )
+      // (2) Árvore de SUBNOTAS da raiz — INSERT/UPDATE/DELETE ao vivo. `notes` está na
+      // publication e tem REPLICA IDENTITY FULL, então o DELETE traz a linha antiga
+      // inteira (dá pra filtrar por parent_note_id). A RLS do realtime só entrega as
+      // subnotas que o usuário pode ver — nada de terceiro sem acesso vaza.
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notes', filter: `parent_note_id=eq.${rootId}` },
+        (payload) => {
+          const rowId = (payload.new as Note)?.id ?? (payload.old as { id?: string })?.id
+          if (!rowId || rowId === noteId) return // a nota ativa é tratada pelo handler (1)
+
+          if (payload.eventType === 'DELETE') {
+            set((state) => {
+              // Não remove aba aberta nem rascunho pendente (evita aba órfã/perda local).
+              if (state.openTabs.includes(rowId) || _pendingDraftIds.has(rowId)) return state
+              if (!state.notes.some((n) => n.id === rowId)) return state
+              return { notes: state.notes.filter((n) => n.id !== rowId) }
+            })
+            return
+          }
+
+          const row = payload.new as Note
+          set((state) => {
+            const local = state.notes.find((n) => n.id === row.id)
+            if (local) {
+              // UPDATE de subnota: respeita edição local pendente / mais nova.
+              if (_pendingDraftIds.has(row.id)) return state
+              if (!tsNewer(row.updated_at, local.updated_at)) return state
+              const merged = normalizeNote(row)
+              merged.is_shared_with_me = local.is_shared_with_me
+              merged.shared_permission = local.shared_permission
+              return { notes: state.notes.map((n) => (n.id === row.id ? merged : n)) }
+            }
+            // INSERT de subnota nova → adiciona e herda as flags de compartilhamento da raiz.
+            const arr = [...state.notes, normalizeNote(row)]
+            inheritSubnoteSharedFlags(arr)
+            return { notes: arr }
           })
         },
       )
