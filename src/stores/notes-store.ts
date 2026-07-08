@@ -262,6 +262,13 @@ interface NotesState {
    * No-op quando não há nota faltando (custo zero no polling).
    */
   loadNotesForVisibleTasks: () => Promise<void>
+  /**
+   * Carrega as SUBNOTAS de notas-raiz ALHEIAS já na tela (categoria compartilhada,
+   * delegação, nota de terceiro). Subnota tem task_id=null e creator alheio, então
+   * escapa de loadNotes (por creator) e de loadNotesForVisibleTasks (por task_id) —
+   * este é o único fetch que as traz pro destinatário. A RLS já autoriza a leitura.
+   */
+  loadSubnotesForLoadedRoots: () => Promise<void>
   /** Sobe pra nuvem os rascunhos locais pendentes (edições offline) — no `online`/foco. */
   flushPendingDrafts: () => Promise<void>
   /** Nº de rascunhos locais pendentes de subir pra nuvem (indicador de sincronização). */
@@ -459,6 +466,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         isLoading: false,
         hasLoadedOnce: true,
       })
+
+      // Completa com as subnotas de raízes ALHEIAS (categoria compartilhada/delegação):
+      // elas têm task_id=null e não vêm pelas queries por creator/task acima.
+      void get().loadSubnotesForLoadedRoots()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       console.error('[notes] loadNotes:', message)
@@ -546,6 +557,77 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // task (essas notas de terceiro costumam vir com content vazio; a verdade está
     // na task) — sem esperar o próximo snapshot.
     get().syncNotesFromTaskDescriptions()
+  },
+
+  loadSubnotesForLoadedRoots: async () => {
+    const authState = useAuthStore.getState()
+    const userId = authState.getEffectiveUserId()
+    if (!userId) return
+    // Modo "Todos": loadNotes já traz TODAS as notas da equipe (subnotas inclusas).
+    if (authState.viewAll) return
+
+    const gen = _viewGeneration
+    // Raízes ALHEIAS na tela — as MINHAS subnotas já vêm por creator_id no loadNotes.
+    const foreignRootIds = get().notes
+      .filter((n) => n.parent_note_id === null && n.creator_id !== userId)
+      .map((n) => n.id)
+    if (foreignRootIds.length === 0) return
+
+    // Busca em lotes para não estourar o tamanho da URL. A RLS ("Users can view
+    // subnotes from accessible parent notes") só retorna as subnotas cuja raiz o
+    // usuário pode ver — nada de terceiro sem acesso vaza. `okRoots` = raízes cujo
+    // lote respondeu OK; só reconcilio deleção nelas (erro de rede não apaga nada).
+    const fetched: Note[] = []
+    const okRoots = new Set<string>()
+    for (let i = 0; i < foreignRootIds.length; i += 100) {
+      const batch = foreignRootIds.slice(i, i + 100)
+      const idList = batch.map((id) => `"${id}"`).join(',')
+      try {
+        const rows = await notesFetch<Note>(
+          `notes?select=*&parent_note_id=in.(${idList})&is_archived=eq.false`,
+        )
+        fetched.push(...rows)
+        for (const id of batch) okRoots.add(id)
+      } catch (e) {
+        console.warn('[notes] loadSubnotesForLoadedRoots:', e)
+      }
+    }
+    if (okRoots.size === 0) return // todos os lotes falharam — não mexe em nada
+    // Troca de conta durante os fetches acima invalida este resultado.
+    if (_viewGeneration !== gen) return
+
+    set((s) => {
+      const fetchedIds = new Set(fetched.map((n) => n.id))
+      const byId = new Map(s.notes.map((n) => [n.id, n]))
+      let changed = false
+      // (1) Reconcilia DELEÇÃO: subnota de uma raiz consultada (lote OK) que NÃO voltou
+      // foi apagada por quem tem acesso — remove o fantasma (senão o bloco de preservação
+      // do loadNotes a re-injetaria). Não remove aba aberta (evita aba órfã) nem rascunho
+      // pendente (edição local ainda não sincronizada).
+      for (const n of s.notes) {
+        if (
+          n.parent_note_id &&
+          okRoots.has(n.parent_note_id) &&
+          !fetchedIds.has(n.id) &&
+          !s.openTabs.includes(n.id) &&
+          !_pendingDraftIds.has(n.id)
+        ) {
+          byId.delete(n.id)
+          changed = true
+        }
+      }
+      // (2) Adiciona as subnotas alheias novas.
+      for (const note of fetched) {
+        if (byId.has(note.id)) continue // já carregada (própria ou via fetchNoteById)
+        byId.set(note.id, normalizeNote(note))
+        changed = true
+      }
+      if (!changed) return s
+      const arr = Array.from(byId.values())
+      // Subnotas herdam as flags de compartilhamento da raiz (permissão = da raiz).
+      inheritSubnoteSharedFlags(arr)
+      return { notes: arr }
+    })
   },
 
   /**

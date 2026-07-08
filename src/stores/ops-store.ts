@@ -521,8 +521,12 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
       // Carrega a nota de tasks visíveis criadas por OUTRA pessoa (coluna minha com
       // nota de terceiro, ou categoria compartilhada) — loadNotes busca por creator
-      // e não pega essas. No-op quando não há nota faltando.
-      void useNotesStore.getState().loadNotesForVisibleTasks()
+      // e não pega essas. No-op quando não há nota faltando. Depois carrega as
+      // SUBNOTAS dessas raízes alheias (task_id=null → não vêm por task nem creator),
+      // pra a subnota criada por um aparecer pros outros no ~próximo ciclo.
+      void useNotesStore.getState().loadNotesForVisibleTasks().then(() => {
+        void useNotesStore.getState().loadSubnotesForLoadedRoots()
+      })
 
       console.log(
         `[ops-sync] Refresh complete. ${newSections.length} sections, ${newTasks.length} tasks.` +
