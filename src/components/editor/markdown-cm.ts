@@ -7,6 +7,7 @@ import type { DecorationSet, ViewUpdate, KeyBinding } from '@codemirror/view'
 import { EditorSelection } from '@codemirror/state'
 import type { Range } from '@codemirror/state'
 import { HighlightStyle, syntaxTree } from '@codemirror/language'
+import { indentMore, indentLess } from '@codemirror/commands'
 import { tags as t } from '@lezer/highlight'
 
 // ── Tema dark do editor (casa com o #2d2d2d atual) ─────────────────────────────
@@ -45,6 +46,9 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
       // sublinhado (<u>) e marca-texto (==) — renderizados por decoração (regex)
       '.cm-md-u': { textDecoration: 'underline' },
       '.cm-md-hl': { backgroundColor: 'rgba(234, 179, 8, 0.28)', borderRadius: '2px', padding: '0 1px' },
+      // bullet renderizado (• no lugar do "- ") + indentação das linhas de lista
+      '.cm-md-bullet': { color: '#9a9aa0', marginRight: '0.5em' },
+      '.cm-md-li': { paddingLeft: '1.3em' },
     },
     { dark: true },
   )
@@ -88,76 +92,126 @@ class CheckboxWidget extends WidgetType {
   ignoreEvent() { return false }
 }
 
-// ── Live preview: esconde marcadores fora da linha ativa + checkbox ────────────
+// ── Widget de bullet (• no lugar do "- ") ──────────────────────────────────────
+class BulletWidget extends WidgetType {
+  eq() { return true }
+  toDOM(): HTMLElement {
+    const s = document.createElement('span')
+    s.className = 'cm-md-bullet'
+    s.textContent = '•'
+    return s
+  }
+}
+
+// ── Live preview: revela marcadores só no TRECHO sob o cursor + listas/checkbox ─
 function buildDeco(view: EditorView): DecorationSet {
   const deco: Range<Decoration>[] = []
-  // linhas que tocam a seleção (aí os marcadores ficam VISÍVEIS pra editar)
-  const activeLines = new Set<number>()
-  for (const r of view.state.selection.ranges) {
-    const a = view.state.doc.lineAt(r.from).number
-    const b = view.state.doc.lineAt(r.to).number
-    for (let n = a; n <= b; n++) activeLines.add(n)
+  const { state } = view
+  const sel = state.selection
+
+  // O cursor/seleção TOCA [from,to]? Se sim, o marcador daquele trecho fica visível pra
+  // edição; ao SAIR do trecho (ex.: dar um espaço depois) ele some. Granularidade = trecho.
+  const touches = (from: number, to: number): boolean => {
+    for (const r of sel.ranges) if (r.from <= to && r.to >= from) return true
+    return false
   }
+  // O cursor está na LINHA de `pos`? (marcadores de BLOCO: #, >, bullet, checkbox.)
+  const lineActive = (pos: number): boolean => {
+    const ln = state.doc.lineAt(pos).number
+    for (const r of sel.ranges) {
+      if (ln >= state.doc.lineAt(r.from).number && ln <= state.doc.lineAt(r.to).number) return true
+    }
+    return false
+  }
+  const isTaskLine = (text: string): boolean => /^\s*[-*+]\s+\[[ xX]\]/.test(text)
+
   const hide = Decoration.replace({})
   const uMark = Decoration.mark({ class: 'cm-md-u' })
   const hlMark = Decoration.mark({ class: 'cm-md-hl' })
+  const liLine = Decoration.line({ attributes: { class: 'cm-md-li' } })
+  const seenLi = new Set<number>()
 
   for (const { from, to } of view.visibleRanges) {
-    // 1) Checkbox + marcadores markdown (nós da árvore de sintaxe)
-    syntaxTree(view.state).iterate({
+    syntaxTree(state).iterate({
       from, to,
       enter: (node) => {
         const name = node.name
-        // Checkbox: nó "TaskMarker" cobre "[ ]"/"[x]" (posição do char central = from+1)
+
+        // Checkbox (item de tarefa): "[ ]"/"[x]" vira caixa clicável fora da linha ativa.
         if (name === 'TaskMarker') {
-          const line = view.state.doc.lineAt(node.from).number
-          if (!activeLines.has(line)) {
-            const checked = view.state.sliceDoc(node.from, node.to).toLowerCase().includes('x')
+          if (!lineActive(node.from)) {
+            const checked = state.sliceDoc(node.from, node.to).toLowerCase().includes('x')
             deco.push(Decoration.replace({ widget: new CheckboxWidget(checked, node.from + 1) }).range(node.from, node.to))
           }
           return
         }
-        // Marcadores a esconder quando a linha não está ativa
-        const isMark =
-          name === 'EmphasisMark' || name === 'StrongEmphasisMark' ||
-          name === 'StrikethroughMark' || name === 'CodeMark' ||
-          name === 'HeaderMark' || name === 'QuoteMark'
-        if (isMark) {
-          const line = view.state.doc.lineAt(node.from).number
-          if (!activeLines.has(line)) {
-            // Para HeaderMark/QuoteMark (no começo da linha) inclui o espaço seguinte.
+
+        // Marcas INLINE (negrito/itálico/tachado/código): escondê-las quando o cursor NÃO
+        // toca o TRECHO (nó pai). Ao sair da palavra / dar um espaço, o marcador some.
+        if (name === 'EmphasisMark' || name === 'StrikethroughMark' || name === 'CodeMark') {
+          const p = node.node.parent
+          if (p && !touches(p.from, p.to)) deco.push(hide.range(node.from, node.to))
+          return
+        }
+
+        // Link [texto](url) → mostra só "texto" (estilizado), escondendo [ ] ( url ) quando
+        // o cursor não toca o Link.
+        if (name === 'LinkMark' || name === 'URL') {
+          let a = node.node.parent
+          while (a && a.name !== 'Link') a = a.parent
+          if (a && !touches(a.from, a.to)) deco.push(hide.range(node.from, node.to))
+          return
+        }
+
+        // Cabeçalho / citação (marcador de BLOCO): esconde "# "/"> " fora da linha ativa.
+        if (name === 'HeaderMark' || name === 'QuoteMark') {
+          if (!lineActive(node.from)) {
             let end = node.to
-            if ((name === 'HeaderMark' || name === 'QuoteMark') && view.state.sliceDoc(end, end + 1) === ' ') end += 1
+            if (state.sliceDoc(end, end + 1) === ' ') end += 1
             if (node.from < end) deco.push(hide.range(node.from, end))
           }
+          return
+        }
+
+        // Lista: indenta a linha SEMPRE. Fora da linha ativa: bullet "-" vira "•"; o "- " do
+        // item de tarefa some (o checkbox já marca o item); lista numerada mantém o número.
+        if (name === 'ListMark') {
+          const line = state.doc.lineAt(node.from)
+          if (!seenLi.has(line.from)) { seenLi.add(line.from); deco.push(liLine.range(line.from)) }
+          if (!lineActive(node.from)) {
+            const mark = state.sliceDoc(node.from, node.to)
+            let end = node.to
+            if (state.sliceDoc(end, end + 1) === ' ') end += 1
+            if (isTaskLine(line.text)) {
+              deco.push(hide.range(node.from, end)) // "- " some; fica só o checkbox
+            } else if (/^[-*+]$/.test(mark)) {
+              deco.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, end))
+            }
+          }
+          return
         }
       },
     })
 
-    // 2) Sublinhado <u>…</u> e marca-texto ==…== — não têm nó lezer, então regex por linha.
-    const startLine = view.state.doc.lineAt(from).number
-    const endLine = view.state.doc.lineAt(to).number
+    // Sublinhado <u>…</u> e marca-texto ==…== (sem nó lezer): revela por TRECHO sob o cursor.
+    const startLine = state.doc.lineAt(from).number
+    const endLine = state.doc.lineAt(to).number
     for (let n = startLine; n <= endLine; n++) {
-      const line = view.state.doc.line(n)
-      const active = activeLines.has(n)
+      const line = state.doc.line(n)
       let m: RegExpExecArray | null
       const uRe = /<u>(.*?)<\/u>/g
       while ((m = uRe.exec(line.text))) {
         const s = line.from + m.index
-        const innerStart = s + 3
-        const innerEnd = innerStart + m[1].length
-        const close = innerEnd + 4
+        const innerStart = s + 3, innerEnd = innerStart + m[1].length, close = innerEnd + 4
         if (m[1].length > 0) deco.push(uMark.range(innerStart, innerEnd))
-        if (!active) { deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close)) }
+        if (!touches(s, close)) { deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close)) }
       }
       const hlRe = /==([^=\n]+)==/g
       while ((m = hlRe.exec(line.text))) {
         const s = line.from + m.index
-        const innerStart = s + 2
-        const innerEnd = innerStart + m[1].length
-        const close = innerEnd + 2
+        const innerStart = s + 2, innerEnd = innerStart + m[1].length, close = innerEnd + 2
         deco.push(hlMark.range(innerStart, innerEnd))
-        if (!active) { deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close)) }
+        if (!touches(s, close)) { deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close)) }
       }
     }
   }
@@ -202,6 +256,30 @@ export const listKeymap: KeyBinding[] = [
       const insert = '\n' + indent + next
       view.dispatch({ changes: { from: range.from, insert }, selection: EditorSelection.cursor(range.from + insert.length) })
       return true
+    },
+  },
+]
+
+// ── Tab: indenta (bom p/ aninhar listas) ou insere espaço no meio do texto ─────
+export const tabKeymap: KeyBinding[] = [
+  {
+    key: 'Tab',
+    run: (view: EditorView) => {
+      if (view.state.readOnly) return false
+      const r = view.state.selection.main
+      if (r.empty) {
+        const line = view.state.doc.lineAt(r.from)
+        const before = view.state.sliceDoc(line.from, r.from)
+        // Só espaços antes do cursor → indenta a linha (aninha lista); no meio → 2 espaços.
+        if (/^\s*$/.test(before)) return indentMore(view)
+        view.dispatch(view.state.replaceSelection('  '))
+        return true
+      }
+      return indentMore(view) // seleção → indenta as linhas
+    },
+    shift: (view: EditorView) => {
+      if (view.state.readOnly) return false
+      return indentLess(view)
     },
   },
 ]
@@ -268,7 +346,19 @@ export function applyFormat(view: EditorView, kind: FormatKind): void {
       view.dispatch({ changes: { from: line.to, insert }, selection: EditorSelection.cursor(line.to + insert.length) })
       break
     }
-    case 'link': wrap(view, '[', '](url)'); break
+    case 'link': {
+      // Com seleção: [texto](url) e seleciona "url" pra digitar. Sem: [|](url).
+      const r = view.state.selection.main
+      const text = view.state.sliceDoc(r.from, r.to)
+      if (text) {
+        const insert = `[${text}](url)`
+        const urlFrom = r.from + text.length + 3 // depois de "]("
+        view.dispatch({ changes: { from: r.from, to: r.to, insert }, selection: EditorSelection.range(urlFrom, urlFrom + 3), scrollIntoView: true })
+      } else {
+        view.dispatch({ changes: { from: r.from, insert: '[](url)' }, selection: EditorSelection.cursor(r.from + 1) })
+      }
+      break
+    }
     case 'today': {
       const d = new Date().toLocaleDateString('pt-BR')
       view.dispatch(view.state.replaceSelection(d))

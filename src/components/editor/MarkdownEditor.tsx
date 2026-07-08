@@ -3,11 +3,11 @@ import {
   EditorView, keymap, lineNumbers, drawSelection, placeholder as cmPlaceholder,
 } from '@codemirror/view'
 import { EditorState, Compartment, Annotation } from '@codemirror/state'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { syntaxHighlighting } from '@codemirror/language'
 import {
-  editorTheme, mdHighlight, livePreview, listKeymap, applyFormat as doFormat, type FormatKind,
+  editorTheme, mdHighlight, livePreview, listKeymap, tabKeymap, applyFormat as doFormat, type FormatKind,
 } from './markdown-cm'
 
 export interface MarkdownEditorHandle {
@@ -84,7 +84,7 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           EditorState.readOnly.of(propsRef.current.readOnly),
           EditorView.editable.of(!propsRef.current.readOnly),
         ]),
-        keymap.of([...listKeymap, ...formatShortcuts, ...defaultKeymap, ...historyKeymap, indentWithTab]),
+        keymap.of([...listKeymap, ...tabKeymap, ...formatShortcuts, ...defaultKeymap, ...historyKeymap]),
         EditorView.updateListener.of((u) => {
           const isExternal = u.transactions.some((tr) => tr.annotation(External))
           if (u.docChanged && !isExternal) {
