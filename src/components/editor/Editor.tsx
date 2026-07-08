@@ -35,23 +35,6 @@ function deriveTitle(content: string): string {
 
 type CtxInfo = { x: number; y: number; hasSelection: boolean; text: string; from: number; to: number }
 
-const TOOLBAR: { kind: FormatKind; icon: typeof Bold; title: string; sep?: boolean }[] = [
-  { kind: 'bold', icon: Bold, title: 'Negrito (Ctrl+B)' },
-  { kind: 'italic', icon: Italic, title: 'Itálico (Ctrl+I)' },
-  { kind: 'underline', icon: Underline, title: 'Sublinhado (Ctrl+U)' },
-  { kind: 'strike', icon: Strikethrough, title: 'Tachado' },
-  { kind: 'highlight', icon: Highlighter, title: 'Marca-texto' },
-  { kind: 'code', icon: Code, title: 'Código' },
-  { kind: 'h1', icon: Heading1, title: 'Título', sep: true },
-  { kind: 'h2', icon: Heading2, title: 'Subtítulo' },
-  { kind: 'checklist', icon: ListChecks, title: 'Checklist' },
-  { kind: 'ul', icon: List, title: 'Lista' },
-  { kind: 'ol', icon: ListOrdered, title: 'Lista numerada' },
-  { kind: 'quote', icon: Quote, title: 'Citação' },
-  { kind: 'link', icon: Link2, title: 'Link', sep: true },
-  { kind: 'divider', icon: Minus, title: 'Divisor' },
-]
-
 export default function Editor() {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
@@ -209,24 +192,6 @@ export default function Editor() {
   return (
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
       <NoteDetailBar />
-
-      {!isReadOnly && (
-        <div className="flex items-center gap-0.5 px-3" style={{ minHeight: 34, paddingTop: 4, paddingBottom: 4, backgroundColor: '#262626', borderBottom: '1px solid #2a2a2a', flexWrap: 'wrap' }}>
-          {TOOLBAR.map((it) => (
-            <span key={it.kind} style={{ display: 'inline-flex', alignItems: 'center' }}>
-              {it.sep && <span style={{ width: 1, height: 16, backgroundColor: '#3a3a3a', margin: '0 5px' }} />}
-              <button
-                onMouseDown={(e) => { e.preventDefault(); applyFormat(it.kind) }}
-                className="flex items-center justify-center rounded transition-colors hover:bg-zinc-700"
-                style={{ width: 26, height: 26, color: '#b4b4bb' }}
-                title={it.title}
-              >
-                <it.icon size={14} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
 
       <div className="flex flex-1 overflow-hidden">
         {subnoteSide === 'left' && <SubnoteTree />}

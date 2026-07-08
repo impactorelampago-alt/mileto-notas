@@ -5,7 +5,8 @@ import {
 import { EditorState, Compartment, Annotation } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { syntaxHighlighting } from '@codemirror/language'
+import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
+import type { SyntaxNode } from '@lezer/common'
 import {
   editorTheme, mdHighlight, livePreview, listKeymap, tabKeymap, applyFormat as doFormat, type FormatKind,
 } from './markdown-cm'
@@ -34,6 +35,32 @@ interface Props {
 // entrar em loop com o salvamento.
 const External = Annotation.define<boolean>()
 
+// URL do Link markdown que cobre `pos` (ou null). Usado pro clique-abre-link.
+function linkUrlAt(state: EditorState, pos: number): string | null {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 0)
+  while (node && node.name !== 'Link') node = node.parent
+  if (!node) return null
+  let child: SyntaxNode | null = node.firstChild
+  while (child) {
+    if (child.name === 'URL') return state.sliceDoc(child.from, child.to).trim()
+    child = child.nextSibling
+  }
+  return null
+}
+
+// Abre a URL no navegador padrão. O main.ts intercepta window.open via
+// setWindowOpenHandler → shell.openExternal. Só http(s)/mailto ou domínio nu (→ https);
+// esquemas perigosos (javascript:, file:) e o placeholder "url" são ignorados.
+function openExternalUrl(raw: string): void {
+  let url = raw.trim()
+  if (!url) return
+  if (!/^(https?:|mailto:)/i.test(url)) {
+    if (/^[\w-]+(\.[\w-]+)+/.test(url)) url = 'https://' + url
+    else return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function MarkdownEditor(props, ref) {
   const parent = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -44,6 +71,8 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
   const roC = useRef(new Compartment())
   const lnC = useRef(new Compartment())
   const wrapC = useRef(new Compartment())
+  // Timer p/ distinguir clique simples (abre link) de duplo-clique (edita).
+  const linkTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useImperativeHandle(ref, () => ({
     applyFormat: (kind) => { if (viewRef.current) doFormat(viewRef.current, kind) },
@@ -125,12 +154,39 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
             })
             return true
           },
+          // Clique num link: 1x abre no navegador, 2x edita (coloca o cursor, revela o raw).
+          mousedown: (e, view) => {
+            if (e.button !== 0) return false
+            const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+            if (pos == null) return false
+            const url = linkUrlAt(view.state, pos)
+            if (!url) return false
+            e.preventDefault() // não posiciona cursor / não seleciona sobre o link
+            if (e.detail === 1) {
+              if (linkTimer.current) clearTimeout(linkTimer.current)
+              // atrasa pra ver se vem um 2º clique (duplo = editar)
+              linkTimer.current = setTimeout(() => { linkTimer.current = null; openExternalUrl(url) }, 250)
+            }
+            return true
+          },
+          dblclick: (e, view) => {
+            const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+            if (pos == null || !linkUrlAt(view.state, pos)) return false
+            if (linkTimer.current) { clearTimeout(linkTimer.current); linkTimer.current = null }
+            e.preventDefault()
+            view.dispatch({ selection: { anchor: pos } }) // cursor no link → revela o raw p/ editar
+            view.focus()
+            return true
+          },
         }),
       ],
     })
     const view = new EditorView({ state, parent: parent.current })
     viewRef.current = view
-    return () => { view.destroy(); viewRef.current = null }
+    return () => {
+      if (linkTimer.current) clearTimeout(linkTimer.current)
+      view.destroy(); viewRef.current = null
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
