@@ -156,6 +156,9 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           },
           // Clique num link: 1x abre no navegador, 2x edita (coloca o cursor, revela o raw).
           mousedown: (e, view) => {
+            // Botão direito NÃO move o cursor/seleção — assim a formatação escolhida no menu
+            // (aberto pelo 'contextmenu') é aplicada onde o texto já estava, não no clique.
+            if (e.button === 2) { e.preventDefault(); return true }
             if (e.button !== 0) return false
             const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
             if (pos == null) return false
