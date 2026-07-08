@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react'
 import {
   NotebookPen, Bold, Italic, Underline, Strikethrough, Highlighter, Code,
   Heading1, Heading2, List, ListOrdered, ListChecks, Quote, Link2, Minus, Building2, Calendar,
@@ -50,6 +50,7 @@ export default function Editor() {
   const [annotationDraft, setAnnotationDraft] = useState<{ text: string; start: number; end: number } | null>(null)
   const [showAnnotationModal, setShowAnnotationModal] = useState(false)
   const editorRef = useRef<MarkdownEditorHandle>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const localContentRef = useRef<string>(activeNote?.content ?? '')
@@ -176,6 +177,20 @@ export default function Editor() {
     setContextMenu(null)
   }, [contextMenu])
 
+  // Reposiciona o menu do botão direito pra NÃO cortar na borda da tela (flip/clamp).
+  useLayoutEffect(() => {
+    const el = menuRef.current
+    if (!contextMenu || !el) return
+    const rect = el.getBoundingClientRect()
+    const m = 8
+    let left = contextMenu.x
+    let top = contextMenu.y
+    if (left + rect.width > window.innerWidth - m) left = Math.max(m, window.innerWidth - rect.width - m)
+    if (top + rect.height > window.innerHeight - m) top = Math.max(m, window.innerHeight - rect.height - m)
+    el.style.left = `${left}px`
+    el.style.top = `${top}px`
+  }, [contextMenu])
+
   if (!activeNote) {
     return (
       <div
@@ -215,8 +230,9 @@ export default function Editor() {
 
       {contextMenu && (
         <div
+          ref={menuRef}
           className="fixed z-30 rounded-xl border"
-          style={{ left: contextMenu.x, top: contextMenu.y, width: 232, backgroundColor: '#1e1e1e', borderColor: '#333333', boxShadow: '0 10px 30px rgba(0,0,0,0.4)', padding: 5 }}
+          style={{ left: contextMenu.x, top: contextMenu.y, width: 232, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', backgroundColor: '#1e1e1e', borderColor: '#333333', boxShadow: '0 10px 30px rgba(0,0,0,0.4)', padding: 5 }}
           onClick={(e) => e.stopPropagation()}
         >
           {!isReadOnly && (

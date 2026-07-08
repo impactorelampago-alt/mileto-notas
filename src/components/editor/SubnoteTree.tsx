@@ -12,6 +12,7 @@ import {
 import { useNotesStore } from '../../stores/notes-store'
 import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore, SUBNOTE_MIN_WIDTH, SUBNOTE_MAX_WIDTH } from '../../stores/ui-store'
+import { NOTE_PRIORITY_COLORS, normalizePriority } from '../../lib/note-priority'
 
 export default function SubnoteTree() {
   const notes = useNotesStore((s) => s.notes)
@@ -129,6 +130,7 @@ export default function SubnoteTree() {
           {/* Subnotas */}
           {subnotes.map((note) => {
             const isActive = activeNote.id === note.id
+            const prColor = NOTE_PRIORITY_COLORS[normalizePriority(note.priority)].dot
             return (
               <button
                 key={note.id}
@@ -140,7 +142,7 @@ export default function SubnoteTree() {
                 }}
                 title={note.title || 'Sem título'}
               >
-                <FileText size={13} style={{ color: isActive ? '#34d399' : '#71717a' }} />
+                <FileText size={13} style={{ color: prColor }} />
               </button>
             )
           })}
@@ -269,6 +271,7 @@ export default function SubnoteTree() {
           {subnotes.map((note) => {
             const isActive = activeNote.id === note.id
             const isHovered = hoveredNoteId === note.id
+            const prColor = NOTE_PRIORITY_COLORS[normalizePriority(note.priority)].dot
 
             return (
               <div
@@ -287,7 +290,7 @@ export default function SubnoteTree() {
                   }}
                   title={note.title || 'Sem título'}
                 >
-                  <FileText size={12} style={{ color: isActive ? '#34d399' : '#71717a', flexShrink: 0 }} />
+                  <FileText size={12} style={{ color: prColor, flexShrink: 0 }} />
                   <span className="truncate text-[12px]">
                     {note.title || 'Sem título'}
                   </span>
