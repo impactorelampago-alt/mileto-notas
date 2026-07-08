@@ -103,24 +103,16 @@ class BulletWidget extends WidgetType {
   }
 }
 
-// ── Live preview: revela marcadores só no TRECHO sob o cursor + listas/checkbox ─
+// ── Live preview: SEMPRE formatado (esconde os marcadores mesmo na linha ativa). O único
+// que revela o cru é o LINK, quando o cursor o toca — pro duplo-clique editar a URL. ───
 function buildDeco(view: EditorView): DecorationSet {
   const deco: Range<Decoration>[] = []
   const { state } = view
   const sel = state.selection
 
-  // O cursor/seleção TOCA [from,to]? Se sim, o marcador daquele trecho fica visível pra
-  // edição; ao SAIR do trecho (ex.: dar um espaço depois) ele some. Granularidade = trecho.
+  // O cursor/seleção TOCA [from,to]? (usado SÓ pra revelar o LINK cru p/ edição da URL).
   const touches = (from: number, to: number): boolean => {
     for (const r of sel.ranges) if (r.from <= to && r.to >= from) return true
-    return false
-  }
-  // O cursor está na LINHA de `pos`? (marcadores de BLOCO: #, >, bullet, checkbox.)
-  const lineActive = (pos: number): boolean => {
-    const ln = state.doc.lineAt(pos).number
-    for (const r of sel.ranges) {
-      if (ln >= state.doc.lineAt(r.from).number && ln <= state.doc.lineAt(r.to).number) return true
-    }
     return false
   }
   const isTaskLine = (text: string): boolean => /^\s*[-*+]\s+\[[ xX]\]/.test(text)
@@ -137,20 +129,16 @@ function buildDeco(view: EditorView): DecorationSet {
       enter: (node) => {
         const name = node.name
 
-        // Checkbox (item de tarefa): "[ ]"/"[x]" vira caixa clicável fora da linha ativa.
+        // Checkbox (item de tarefa): "[ ]"/"[x]" SEMPRE vira caixa clicável (nunca o cru).
         if (name === 'TaskMarker') {
-          if (!lineActive(node.from)) {
-            const checked = state.sliceDoc(node.from, node.to).toLowerCase().includes('x')
-            deco.push(Decoration.replace({ widget: new CheckboxWidget(checked, node.from + 1) }).range(node.from, node.to))
-          }
+          const checked = state.sliceDoc(node.from, node.to).toLowerCase().includes('x')
+          deco.push(Decoration.replace({ widget: new CheckboxWidget(checked, node.from + 1) }).range(node.from, node.to))
           return
         }
 
-        // Marcas INLINE (negrito/itálico/tachado/código): escondê-las quando o cursor NÃO
-        // toca o TRECHO (nó pai). Ao sair da palavra / dar um espaço, o marcador some.
+        // Marcas INLINE (negrito/itálico/tachado/código): SEMPRE escondidas (já formatado).
         if (name === 'EmphasisMark' || name === 'StrikethroughMark' || name === 'CodeMark') {
-          const p = node.node.parent
-          if (p && !touches(p.from, p.to)) deco.push(hide.range(node.from, node.to))
+          deco.push(hide.range(node.from, node.to))
           return
         }
 
@@ -163,37 +151,33 @@ function buildDeco(view: EditorView): DecorationSet {
           return
         }
 
-        // Cabeçalho / citação (marcador de BLOCO): esconde "# "/"> " fora da linha ativa.
+        // Cabeçalho / citação (marcador de BLOCO): SEMPRE esconde "# "/"> ".
         if (name === 'HeaderMark' || name === 'QuoteMark') {
-          if (!lineActive(node.from)) {
-            let end = node.to
-            if (state.sliceDoc(end, end + 1) === ' ') end += 1
-            if (node.from < end) deco.push(hide.range(node.from, end))
-          }
+          let end = node.to
+          if (state.sliceDoc(end, end + 1) === ' ') end += 1
+          if (node.from < end) deco.push(hide.range(node.from, end))
           return
         }
 
-        // Lista: indenta a linha SEMPRE. Fora da linha ativa: bullet "-" vira "•"; o "- " do
-        // item de tarefa some (o checkbox já marca o item); lista numerada mantém o número.
+        // Lista: indenta a linha e SEMPRE formata — bullet "-" vira "•"; o "- " do item de
+        // tarefa some (o checkbox já marca o item); lista numerada mantém o número.
         if (name === 'ListMark') {
           const line = state.doc.lineAt(node.from)
           if (!seenLi.has(line.from)) { seenLi.add(line.from); deco.push(liLine.range(line.from)) }
-          if (!lineActive(node.from)) {
-            const mark = state.sliceDoc(node.from, node.to)
-            let end = node.to
-            if (state.sliceDoc(end, end + 1) === ' ') end += 1
-            if (isTaskLine(line.text)) {
-              deco.push(hide.range(node.from, end)) // "- " some; fica só o checkbox
-            } else if (/^[-*+]$/.test(mark)) {
-              deco.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, end))
-            }
+          const mark = state.sliceDoc(node.from, node.to)
+          let end = node.to
+          if (state.sliceDoc(end, end + 1) === ' ') end += 1
+          if (isTaskLine(line.text)) {
+            deco.push(hide.range(node.from, end)) // "- " some; fica só o checkbox
+          } else if (/^[-*+]$/.test(mark)) {
+            deco.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, end))
           }
           return
         }
       },
     })
 
-    // Sublinhado <u>…</u> e marca-texto ==…== (sem nó lezer): revela por TRECHO sob o cursor.
+    // Sublinhado <u>…</u> e marca-texto ==…== (sem nó lezer): SEMPRE formatados.
     const startLine = state.doc.lineAt(from).number
     const endLine = state.doc.lineAt(to).number
     for (let n = startLine; n <= endLine; n++) {
@@ -204,14 +188,14 @@ function buildDeco(view: EditorView): DecorationSet {
         const s = line.from + m.index
         const innerStart = s + 3, innerEnd = innerStart + m[1].length, close = innerEnd + 4
         if (m[1].length > 0) deco.push(uMark.range(innerStart, innerEnd))
-        if (!touches(s, close)) { deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close)) }
+        deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close))
       }
       const hlRe = /==([^=\n]+)==/g
       while ((m = hlRe.exec(line.text))) {
         const s = line.from + m.index
         const innerStart = s + 2, innerEnd = innerStart + m[1].length, close = innerEnd + 2
         deco.push(hlMark.range(innerStart, innerEnd))
-        if (!touches(s, close)) { deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close)) }
+        deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close))
       }
     }
   }
