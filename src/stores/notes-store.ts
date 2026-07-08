@@ -271,7 +271,7 @@ interface NotesState {
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
   createSubnote: (parentNoteId: string, options?: { title?: string }) => Promise<Note | null>
-  updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'priority' | 'category_id' | 'is_pinned' | 'is_archived' | 'client_id' | 'task_id'>>) => Promise<void>
+  updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'priority' | 'category_id' | 'is_pinned' | 'is_archived' | 'client_id' | 'task_id' | 'due_date'>>) => Promise<void>
   completeNote: (noteId: string) => Promise<void>
   /** Alterna concluída/pendente: conclui (status→DONE) ou desfaz (volta à origem). */
   toggleComplete: (noteId: string) => Promise<void>
@@ -739,6 +739,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       is_archived: false,
       created_at: now,
       updated_at: now,
+      due_date: null,
     }
 
     set((s) => ({ notes: [optimistic, ...s.notes] }))
@@ -835,6 +836,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       is_archived: false,
       created_at: now,
       updated_at: now,
+      due_date: null,
     }
 
     set((s) => ({ notes: [...s.notes, optimistic] }))

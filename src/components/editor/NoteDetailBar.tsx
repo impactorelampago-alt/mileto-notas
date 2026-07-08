@@ -53,6 +53,10 @@ export default function NoteDetailBar() {
 
   if (!activeNote) return null
 
+  // Subnota: Empresa/Prazo/Prioridade vivem na PRÓPRIA nota (subnota não tem task).
+  // Categoria e Recorrência são conceitos da task/board → ficam ocultos na subnota.
+  const isSubnote = !!activeNote.parent_note_id
+
   // DONO tem controle total (prioridade/cliente/status de qualquer tarefa).
   const readOnly = !isDono && (viewAll || (!!activeNote.is_shared_with_me && activeNote.shared_permission !== 'EDIT'))
   const priority = normalizePriority(activeNote.priority)
@@ -66,16 +70,29 @@ export default function NoteDetailBar() {
     sections.find((s) => s.key_suffix === getStatusBase(effStatus)) ??
     null
 
-  const dueDate = task?.due_date ? new Date(task.due_date) : null
+  const dueRaw = isSubnote ? activeNote.due_date : (task?.due_date ?? null)
+  const dueDate = dueRaw ? new Date(dueRaw) : null
   const dueInputValue = dueDate ? dueDate.toISOString().slice(0, 10) : ''
   const overdue = !!dueDate && !done && dueDate < new Date(new Date().toISOString().slice(0, 10))
   const dueLabel = dueDate ? dueDate.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : 'Prazo'
 
-  const company = task?.client_id ? clients.find((c) => c.id === task.client_id)?.company ?? null : null
+  const clientId = isSubnote ? activeNote.client_id : (task?.client_id ?? null)
+  const company = clientId ? clients.find((c) => c.id === clientId)?.company ?? null : null
   const rec = task?.recurrence ?? null
 
   const toggle = (p: Pop) => setPop((cur) => (cur === p ? null : p))
   const canEdit = !readOnly && !!task
+  // Empresa/Prazo também valem pra SUBNOTA — gravam na própria nota (via updateNote),
+  // já que a subnota não tem task. Na nota raiz continuam indo pra task.
+  const canEditMeta = !readOnly && (isSubnote || !!task)
+  const setClientId = (client_id: string | null) => {
+    if (isSubnote) void updateNote(activeNote.id, { client_id })
+    else if (task) void updateTaskFields(task.id, { client_id })
+  }
+  const setDueDate = (due_date: string | null) => {
+    if (isSubnote) void updateNote(activeNote.id, { due_date })
+    else if (task) void updateTaskFields(task.id, { due_date })
+  }
 
   // ── chip base ──────────────────────────────────────────────────────────────
   const Chip = (props: {
@@ -118,7 +135,8 @@ export default function NoteDetailBar() {
         backgroundColor: '#262626', borderBottom: '1px solid #2a2a2a',
       }}
     >
-      {/* CATEGORIA */}
+      {/* CATEGORIA — só na nota raiz (subnota não fica no board do Ops) */}
+      {!isSubnote && (
       <div className="relative" style={{ flexShrink: 0 }}>
         <Chip
           id="cat"
@@ -155,6 +173,7 @@ export default function NoteDetailBar() {
           </div>
         )}
       </div>
+      )}
 
       {/* PRIORIDADE */}
       <div className="relative" style={{ flexShrink: 0 }}>
@@ -191,19 +210,19 @@ export default function NoteDetailBar() {
 
       {/* PRAZO */}
       <div className="relative" style={{ flexShrink: 0 }}>
-        <Chip id="prazo" icon={<Calendar size={13} />} label={dueLabel} active={!!dueDate && !overdue} danger={overdue} disabled={!canEdit} />
+        <Chip id="prazo" icon={<Calendar size={13} />} label={dueLabel} active={!!dueDate && !overdue} danger={overdue} disabled={!canEditMeta} />
         {pop === 'prazo' && (
           <div style={popStyle}>
             <input
               type="date"
               value={dueInputValue}
-              onChange={(e) => { const v = e.target.value; void updateTaskFields(task!.id, { due_date: v || null }); if (v) setPop(null) }}
+              onChange={(e) => { const v = e.target.value; setDueDate(v || null); if (v) setPop(null) }}
               className="bg-transparent outline-none"
               style={{ border: '1px solid #3f3f46', borderRadius: 6, padding: '7px 9px', color: '#e4e4e7', fontSize: 13, colorScheme: 'dark' }}
             />
             {dueDate && (
               <button
-                onClick={() => { setPop(null); void updateTaskFields(task!.id, { due_date: null }) }}
+                onClick={() => { setPop(null); setDueDate(null) }}
                 className="mt-1.5 flex w-full items-center justify-center rounded-md"
                 style={{ gap: 6, padding: '6px', fontSize: 12, color: '#9a9aa3' }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#2a2a2a' }}
@@ -218,7 +237,7 @@ export default function NoteDetailBar() {
 
       {/* EMPRESA */}
       <div className="relative" style={{ flexShrink: 0 }}>
-        <Chip id="empresa" icon={<Building2 size={13} />} label={company ?? 'Empresa'} active={!!company} disabled={!canEdit} />
+        <Chip id="empresa" icon={<Building2 size={13} />} label={company ?? 'Empresa'} active={!!company} disabled={!canEditMeta} />
         {pop === 'empresa' && (
           <div style={{ ...popStyle, width: 260 }}>
             <div className="flex items-center rounded-md" style={{ gap: 6, padding: '6px 8px', border: '1px solid #3f3f46', marginBottom: 6 }}>
@@ -234,7 +253,7 @@ export default function NoteDetailBar() {
             </div>
             <div style={{ maxHeight: 240, overflowY: 'auto' }}>
               <button
-                onClick={() => { setPop(null); void updateTaskFields(task!.id, { client_id: null }) }}
+                onClick={() => { setPop(null); setClientId(null) }}
                 className="flex w-full items-center rounded-md text-left"
                 style={{ padding: '7px 9px', fontSize: 13, color: '#9a9aa3' }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#2a2a2a' }}
@@ -246,11 +265,11 @@ export default function NoteDetailBar() {
                 .filter((c) => !clientSearch || (c.company ?? '').toLowerCase().includes(clientSearch.toLowerCase()))
                 .slice(0, 50)
                 .map((c) => {
-                  const cur = c.id === task?.client_id
+                  const cur = c.id === clientId
                   return (
                     <button
                       key={c.id}
-                      onClick={() => { setPop(null); void updateTaskFields(task!.id, { client_id: c.id }) }}
+                      onClick={() => { setPop(null); setClientId(c.id) }}
                       className="flex w-full items-center rounded-md text-left"
                       style={{ gap: 8, padding: '7px 9px', backgroundColor: cur ? 'rgba(16,185,129,0.10)' : 'transparent' }}
                       onMouseEnter={(e) => { if (!cur) e.currentTarget.style.backgroundColor = '#2a2a2a' }}
@@ -270,7 +289,8 @@ export default function NoteDetailBar() {
         )}
       </div>
 
-      {/* RECORRÊNCIA */}
+      {/* RECORRÊNCIA — conceito de tarefa/board; oculto na subnota */}
+      {!isSubnote && (
       <div className="relative" style={{ flexShrink: 0 }}>
         <Chip id="recorr" icon={<Repeat size={13} />} label={recurrenceSummary(rec)} active={!!rec} disabled={!canEdit} />
         {pop === 'recorr' && (
@@ -311,6 +331,7 @@ export default function NoteDetailBar() {
           </div>
         )}
       </div>
+      )}
 
       {done && (
         <span style={{ marginLeft: 'auto', fontSize: 11, color: '#34d399', fontWeight: 600, flexShrink: 0 }}>✓ Concluída</span>

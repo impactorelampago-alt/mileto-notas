@@ -47,6 +47,9 @@ export interface Note {
   is_archived: boolean
   created_at: string
   updated_at: string
+  // Prazo PRÓPRIO da subnota (subnota não tem task; nota raiz usa tasks.due_date e
+  // deixa isto NULL). Informativo — não gera tarefa/lembrete no Ops.
+  due_date: string | null
   // Relações opcionais (joins)
   creator?: Profile
   collaborators?: NoteCollaborator[]
