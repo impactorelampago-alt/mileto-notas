@@ -236,6 +236,11 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     if (!realId) return false
     if (note.creator_id === realId) return true          // minha nota
     if (get().profile?.role === 'DONO') return true        // DONO apaga de todos
+    // Categoria compartilhada (espaço colaborativo): quem PODE EDITAR pode excluir —
+    // dono da categoria e destinatário com EDIT (mesma regra de canEditNote). O RPC
+    // notas_delete_note_for valida no banco (user_can_edit_note). ⚠️ apagar a nota-raiz
+    // apaga a task = tira o card do board do Ops.
+    if (note.is_shared_with_me && note.shared_permission === 'EDIT') return true
     const ed = get().editableIds
     return ed != null && ed.has(note.creator_id)           // cargo com EDITAR
   },
