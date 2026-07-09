@@ -16,6 +16,7 @@ export interface MarkdownEditorHandle {
   focus: () => void
   selectAll: () => void
   getSelection: () => { text: string; from: number; to: number }
+  insertAtCursor: (text: string) => void
 }
 
 interface Props {
@@ -86,6 +87,12 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       if (!v) return { text: '', from: 0, to: 0 }
       const r = v.state.selection.main
       return { text: v.state.sliceDoc(r.from, r.to), from: r.from, to: r.to }
+    },
+    insertAtCursor: (text) => {
+      const v = viewRef.current
+      if (!v || v.state.readOnly) return
+      v.dispatch(v.state.replaceSelection(text))
+      v.focus()
     },
   }))
 

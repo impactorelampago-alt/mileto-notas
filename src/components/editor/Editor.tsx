@@ -29,6 +29,7 @@ function deriveTitle(content: string): string {
     .replace(/^\d+\.(\s+|$)/, '')
     .replace(/\*\*|__|~~|`|==/g, '')
     .replace(/<\/?u>/g, '')
+    .replace(/\{\{img:[0-9a-fA-F]{4,32}\}\}/g, '')
     .trim()
     .slice(0, 60)
 }
@@ -226,7 +227,11 @@ export default function Editor() {
         {subnoteSide === 'right' && <SubnoteTree />}
       </div>
 
-      <NoteMediaStrip noteId={activeNote.id} canEdit={!isReadOnly} />
+      <NoteMediaStrip
+        noteId={activeNote.id}
+        canEdit={!isReadOnly}
+        onMentionImage={(m) => editorRef.current?.insertAtCursor(`{{img:${m.id.slice(0, 8)}}} `)}
+      />
 
       {contextMenu && (
         <div

@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ImagePlus, Copy, Check, Trash2, X, XCircle, Loader2 } from 'lucide-react'
+import { ImagePlus, Copy, Check, Trash2, X, XCircle, Loader2, AtSign } from 'lucide-react'
 import { useMediaStore, ACCEPT_ATTR } from '../../stores/media-store'
 import type { NoteMedia } from '../../lib/types'
 
 interface Props {
   noteId: string
   canEdit: boolean
+  /** Insere uma menção {{img:id}} no texto do editor (só quando pode editar). */
+  onMentionImage?: (m: NoteMedia) => void
 }
 
 const THUMB = 76
 
-export default function NoteMediaStrip({ noteId, canEdit }: Props) {
+export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Props) {
   const media = useMediaStore((s) => s.mediaByNote[noteId])
   const uploading = useMediaStore((s) => s.uploadingByNote[noteId] ?? 0)
   const copyingId = useMediaStore((s) => s.copyingId)
@@ -26,6 +28,8 @@ export default function NoteMediaStrip({ noteId, canEdit }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [failedId, setFailedId] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<NoteMedia | null>(null)
+  const [flashId, setFlashId] = useState<string | null>(null)
+  const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -39,6 +43,22 @@ export default function NoteMediaStrip({ noteId, canEdit }: Props) {
   }, [noteId, loadMedia])
 
   useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current) }, [])
+
+  // Clicar num chip {{img:id}} no editor dispara 'mileto:flash-image' com o id8:
+  // rola até a imagem correspondente e a destaca por ~1.5s.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id8 = (e as CustomEvent<string>).detail
+      if (!id8) return
+      const match = (media ?? []).find((m) => m.id.slice(0, 8) === id8)
+      if (!match) return
+      setFlashId(id8)
+      itemRefs.current[match.id]?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+      window.setTimeout(() => setFlashId((cur) => (cur === id8 ? null : cur)), 1500)
+    }
+    document.addEventListener('mileto:flash-image', handler)
+    return () => document.removeEventListener('mileto:flash-image', handler)
+  }, [media])
 
   const items = media ?? []
 
@@ -125,14 +145,20 @@ export default function NoteMediaStrip({ noteId, canEdit }: Props) {
             const isCopied = copiedId === m.id
             const isFailed = failedId === m.id
             const isCopying = copyingId === m.id
+            const isFlashing = flashId === m.id.slice(0, 8)
             return (
               <div
                 key={m.id}
+                ref={(el) => { itemRefs.current[m.id] = el }}
                 className="group relative shrink-0 overflow-hidden"
                 style={{
                   width: THUMB, height: THUMB, borderRadius: 10,
-                  border: '1px solid #3a3a3a', backgroundColor: '#1b1b1b',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                  border: `1px solid ${isFlashing ? '#10b981' : '#3a3a3a'}`,
+                  backgroundColor: '#1b1b1b',
+                  boxShadow: isFlashing
+                    ? '0 0 0 2px #10b981, 0 0 14px rgba(16,185,129,0.55)'
+                    : '0 1px 3px rgba(0,0,0,0.3)',
+                  transition: 'box-shadow 180ms, border-color 180ms',
                 }}
               >
                 <button
@@ -155,6 +181,18 @@ export default function NoteMediaStrip({ noteId, canEdit }: Props) {
                   className="pointer-events-none absolute inset-0 flex items-start justify-end gap-1 p-1.5 opacity-0 transition-opacity group-hover:opacity-100"
                   style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0) 55%)' }}
                 >
+                  {canEdit && onMentionImage && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMentionImage(m) }}
+                      title="Mencionar no texto"
+                      className="pointer-events-auto flex items-center justify-center rounded-md"
+                      style={{ width: 22, height: 22, backgroundColor: 'rgba(20,20,20,0.8)', color: '#e4e4e4', backdropFilter: 'blur(2px)' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(16,185,129,0.9)'; e.currentTarget.style.color = '#06120d' }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(20,20,20,0.8)'; e.currentTarget.style.color = '#e4e4e4' }}
+                    >
+                      <AtSign size={12} />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => { e.stopPropagation(); void handleCopy(m) }}
                     title={isFailed ? 'Falha ao copiar' : isCopied ? 'Copiado!' : 'Copiar imagem'}

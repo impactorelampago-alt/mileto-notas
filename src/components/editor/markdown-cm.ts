@@ -49,6 +49,14 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
       // bullet renderizado (• no lugar do "- ") + indentação das linhas de lista
       '.cm-md-bullet': { color: '#9a9aa0', marginRight: '0.5em' },
       '.cm-md-li': { paddingLeft: '1.3em' },
+      // chip de menção a imagem ({{img:id}}) — clicável, leva/piscando a imagem na faixa
+      '.cm-img-chip': {
+        display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '0 6px',
+        margin: '0 1px', height: '18px', verticalAlign: '-4px', borderRadius: '5px',
+        border: '1px solid #3a5f4a', backgroundColor: 'rgba(16,185,129,0.12)',
+        color: '#6ee7b7', cursor: 'pointer', fontSize: '0.82em', userSelect: 'none',
+      },
+      '.cm-img-chip:hover': { backgroundColor: 'rgba(16,185,129,0.22)' },
     },
     { dark: true },
   )
@@ -101,6 +109,27 @@ class BulletWidget extends WidgetType {
     s.textContent = '•'
     return s
   }
+}
+
+// ── Widget de menção a imagem ({{img:<id8>}}) ─────────────────────────────────
+// Clicar dispara 'mileto:flash-image' (o NoteMediaStrip rola até a imagem e pisca).
+// O token some (vira chip); o char continua no texto (some ao apagar por cima).
+class ImageMentionWidget extends WidgetType {
+  constructor(readonly id8: string) { super() }
+  eq(o: ImageMentionWidget) { return o.id8 === this.id8 }
+  toDOM(): HTMLElement {
+    const chip = document.createElement('span')
+    chip.className = 'cm-img-chip'
+    chip.title = 'Ir para a imagem'
+    chip.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.6"/><path d="m21 15-4.5-4.5L5 21"/></svg><span>imagem</span>'
+    chip.onmousedown = (e) => {
+      e.preventDefault()
+      document.dispatchEvent(new CustomEvent('mileto:flash-image', { detail: this.id8 }))
+    }
+    return chip
+  }
+  ignoreEvent() { return false }
 }
 
 // ── Live preview: SEMPRE formatado (esconde os marcadores mesmo na linha ativa). O único
@@ -196,6 +225,12 @@ function buildDeco(view: EditorView): DecorationSet {
         const innerStart = s + 2, innerEnd = innerStart + m[1].length, close = innerEnd + 2
         deco.push(hlMark.range(innerStart, innerEnd))
         deco.push(hide.range(s, innerStart)); deco.push(hide.range(innerEnd, close))
+      }
+      // Menção a imagem {{img:<id8>}} → chip clicável (o char continua no texto).
+      const imgRe = /\{\{img:([0-9a-fA-F]{4,32})\}\}/g
+      while ((m = imgRe.exec(line.text))) {
+        const s = line.from + m.index
+        deco.push(Decoration.replace({ widget: new ImageMentionWidget(m[1]) }).range(s, s + m[0].length))
       }
     }
   }
