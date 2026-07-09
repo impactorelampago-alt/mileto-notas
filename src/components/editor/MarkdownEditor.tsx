@@ -11,7 +11,7 @@ import type { SyntaxNode } from '@lezer/common'
 import {
   editorTheme, mdHighlight, livePreview, listKeymap, tabKeymap, applyFormat as doFormat, type FormatKind,
 } from './markdown-cm'
-import { mentionCompletionSource, mentionHighlight, flashField, flashLineEffect } from './mentions'
+import { mentionCompletionSource, mentionHighlight, flashField, flashLineEffect, tokenDeleteKeymap } from './mentions'
 
 export interface MarkdownEditorHandle {
   applyFormat: (kind: FormatKind) => void
@@ -136,7 +136,7 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           EditorState.readOnly.of(propsRef.current.readOnly),
           EditorView.editable.of(!propsRef.current.readOnly),
         ]),
-        keymap.of([...completionKeymap, ...listKeymap, ...tabKeymap, ...formatShortcuts, ...defaultKeymap, ...historyKeymap]),
+        keymap.of([...completionKeymap, ...listKeymap, ...tabKeymap, ...tokenDeleteKeymap, ...formatShortcuts, ...defaultKeymap, ...historyKeymap]),
         EditorView.updateListener.of((u) => {
           const isExternal = u.transactions.some((tr) => tr.annotation(External))
           if (u.docChanged && !isExternal) {

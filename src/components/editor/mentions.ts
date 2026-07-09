@@ -2,7 +2,7 @@
 // notificar, e o "flash" de linha usado pelo deep-link da notificação.
 // Fica FORA do markdown-cm (que é puro) porque depende do auth-store (time).
 import { EditorView, Decoration, ViewPlugin } from '@codemirror/view'
-import type { DecorationSet, ViewUpdate } from '@codemirror/view'
+import type { DecorationSet, ViewUpdate, KeyBinding } from '@codemirror/view'
 import { StateField, StateEffect } from '@codemirror/state'
 import type { CompletionContext, CompletionResult } from '@codemirror/autocomplete'
 import { useAuthStore } from '../../stores/auth-store'
@@ -60,3 +60,54 @@ export const flashField = StateField.define<DecorationSet>({
   },
   provide: (f) => EditorView.decorations.from(f),
 })
+
+// ── Backspace/Delete inteligente: apaga o TOKEN inteiro de uma vez ──────────────
+// Sem isto, apagar um chip de imagem ({{img:id}}) ou uma @menção revelava o código
+// cru e o usuário tinha que apagar char por char. Aqui, se o cursor está colado num
+// desses tokens, o backspace/delete remove o token todo.
+const IMG_TOKEN = /\{\{img:[0-9a-fA-F]{4,32}\}\}/
+
+function tokenAround(view: EditorView, side: 'before' | 'after'): { from: number; to: number } | null {
+  const { state } = view
+  const r = state.selection.main
+  if (!r.empty || state.readOnly) return null
+  const pos = r.from
+  const line = state.doc.lineAt(pos)
+  // 1) chip de imagem {{img:...}} colado no cursor
+  if (side === 'before') {
+    const m = new RegExp(IMG_TOKEN.source + '$').exec(state.sliceDoc(line.from, pos))
+    if (m) return { from: pos - m[0].length, to: pos }
+  } else {
+    const m = new RegExp('^' + IMG_TOKEN.source).exec(state.sliceDoc(pos, line.to))
+    if (m) return { from: pos, to: pos + m[0].length }
+  }
+  // 2) @menção de membro do time colada no cursor
+  for (const h of findMentions(line.text, teamMembers())) {
+    const from = line.from + h.from
+    const to = line.from + h.to
+    if (side === 'before' && to === pos) return { from, to }
+    if (side === 'after' && from === pos) return { from, to }
+  }
+  return null
+}
+
+export const tokenDeleteKeymap: KeyBinding[] = [
+  {
+    key: 'Backspace',
+    run: (view) => {
+      const t = tokenAround(view, 'before')
+      if (!t) return false
+      view.dispatch({ changes: { from: t.from, to: t.to }, scrollIntoView: true })
+      return true
+    },
+  },
+  {
+    key: 'Delete',
+    run: (view) => {
+      const t = tokenAround(view, 'after')
+      if (!t) return false
+      view.dispatch({ changes: { from: t.from, to: t.to }, scrollIntoView: true })
+      return true
+    },
+  },
+]
