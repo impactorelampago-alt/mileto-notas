@@ -8,6 +8,7 @@ import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useMediaStore } from '../../stores/media-store'
 import { useAuthStore } from '../../stores/auth-store'
+import { useEditsStore } from '../../stores/edits-store'
 import AddAnnotationToCompanyModal from '../ui/AddAnnotationToCompanyModal'
 import NoteMediaStrip from './NoteMediaStrip'
 import NoteDetailBar from './NoteDetailBar'
@@ -152,6 +153,7 @@ export default function Editor() {
         if (nextTitle !== '' && cur?.title !== nextTitle) patch.title = nextTitle
         await updateNote(id, patch)
         void useNotesStore.getState().notifyMentions(id) // avisa @menções novas
+        void useEditsStore.getState().recordNoteEdit(id) // registra "quem editou, quando"
         setSaveState('saved')
         if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
         savedTimerRef.current = setTimeout(() => setSaveState('idle'), 1500)

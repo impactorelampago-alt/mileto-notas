@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { Calendar, Building2, Repeat, Check, X, Search } from 'lucide-react'
+import { Calendar, Building2, Repeat, Check, X, Search, History } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
+import { useEditsStore } from '../../stores/edits-store'
 import { NOTE_PRIORITY_COLORS, NOTE_PRIORITY_LABELS, normalizePriority } from '../../lib/note-priority'
 import { sectionDisplayLabel } from '../../lib/sections'
 import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
@@ -14,10 +15,28 @@ import type { NotePriority, Recurrence } from '../../lib/types'
 
 const PRIORITY_ORDER: NotePriority[] = ['URGENT', 'HIGH', 'MEDIUM', 'LOW']
 
-type Pop = 'cat' | 'prio' | 'prazo' | 'empresa' | 'recorr' | null
+type Pop = 'cat' | 'prio' | 'prazo' | 'empresa' | 'recorr' | 'hist' | null
 
 const POP_BG = '#202020'
 const POP_BORDER = '#353535'
+
+/** Tempo relativo curto em pt-BR. */
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (s < 60) return 'agora'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `há ${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `há ${h} h`
+  const d = Math.floor(h / 24)
+  if (d < 30) return `há ${d} d`
+  return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })
+}
+
+/** Primeiro nome (compacto pro chip). */
+function firstName(name: string): string {
+  return name.split(' ')[0] || name
+}
 
 /** Barra de detalhe da nota (espelha o detalhe da tarefa do Ops): Categoria ·
  * Prioridade · Prazo · Empresa · Recorrência. Fica entre as abas e o editor.
@@ -32,6 +51,9 @@ export default function NoteDetailBar() {
   const setActiveSectionId = useOpsStore((s) => s.setActiveSectionId)
   const viewAll = useAuthStore((s) => s.viewAll)
   const isDono = useAuthStore((s) => s.isDono())
+  const teamProfiles = useAuthStore((s) => s.teamProfiles)
+  const editsByNote = useEditsStore((s) => s.editsByNote)
+  const loadNoteEdits = useEditsStore((s) => s.loadNoteEdits)
 
   const [pop, setPop] = useState<Pop>(null)
   const [clientSearch, setClientSearch] = useState('')
@@ -45,6 +67,11 @@ export default function NoteDetailBar() {
     window.addEventListener('mousedown', onDown)
     return () => window.removeEventListener('mousedown', onDown)
   }, [pop])
+
+  const activeNoteId = activeNote?.id
+  useEffect(() => {
+    if (activeNoteId) void loadNoteEdits(activeNoteId)
+  }, [activeNoteId, loadNoteEdits])
 
   const task = useMemo(
     () => (activeNote?.task_id ? tasks.find((t) => t.id === activeNote.task_id) ?? null : null),
@@ -79,6 +106,12 @@ export default function NoteDetailBar() {
   const clientId = isSubnote ? activeNote.client_id : (task?.client_id ?? null)
   const company = clientId ? clients.find((c) => c.id === clientId)?.company ?? null : null
   const rec = task?.recurrence ?? null
+
+  // Histórico "quem editou, quando" (só edições feitas no Notas).
+  const edits = editsByNote[activeNote.id] ?? []
+  const lastEdit = edits[0]
+  const nameFor = (id: string | null): string =>
+    (id ? teamProfiles.find((p) => p.id === id)?.name ?? 'Alguém' : 'Alguém')
 
   const toggle = (p: Pop) => setPop((cur) => (cur === p ? null : p))
   const canEdit = !readOnly && !!task
@@ -333,9 +366,45 @@ export default function NoteDetailBar() {
       </div>
       )}
 
-      {done && (
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: '#34d399', fontWeight: 600, flexShrink: 0 }}>✓ Concluída</span>
-      )}
+      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        {done && (
+          <span style={{ fontSize: 11, color: '#34d399', fontWeight: 600 }}>✓ Concluída</span>
+        )}
+        {/* HISTÓRICO — última edição (quem/quando) + popover com a lista completa */}
+        {lastEdit && (
+          <div className="relative">
+            <button
+              onClick={() => toggle('hist')}
+              className="flex items-center rounded-md"
+              style={{
+                gap: 6, height: 24, padding: '0 8px', fontSize: 11,
+                color: '#8a8a92', backgroundColor: pop === 'hist' ? '#333' : 'transparent',
+                border: '1px solid #333', transition: 'background-color 120ms',
+              }}
+              onMouseEnter={(e) => { if (pop !== 'hist') e.currentTarget.style.backgroundColor = '#2a2a2a' }}
+              onMouseLeave={(e) => { if (pop !== 'hist') e.currentTarget.style.backgroundColor = 'transparent' }}
+              title="Histórico de edições"
+            >
+              <History size={12} />
+              <span className="truncate" style={{ maxWidth: 160 }}>
+                {firstName(nameFor(lastEdit.editor_id))} · {timeAgo(lastEdit.edited_at)}
+              </span>
+            </button>
+            {pop === 'hist' && (
+              <div style={{ ...popStyle, left: 'auto', right: 0, width: 240, maxHeight: 300, overflowY: 'auto' }}>
+                <div style={{ padding: '4px 8px 6px', fontSize: 11, color: '#71717a' }}>Histórico de edição</div>
+                {edits.map((e, i) => (
+                  <div key={`${e.editor_id}-${e.edited_at}`} className="flex items-center" style={{ gap: 8, padding: '6px 9px' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: 999, backgroundColor: i === 0 ? '#10b981' : '#52525b', flexShrink: 0 }} />
+                    <span className="flex-1 truncate" style={{ fontSize: 12.5, color: '#d4d4d8' }}>{nameFor(e.editor_id)}</span>
+                    <span style={{ fontSize: 11, color: '#71717a', flexShrink: 0 }}>{timeAgo(e.edited_at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
