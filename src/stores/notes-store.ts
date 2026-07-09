@@ -16,6 +16,24 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
 let _notesToken: string | null = null
+
+// Mantém o token REST em SINCRONIA com o refresh automático do JWT (o GoTrue rotaciona
+// o token ~a cada hora). Sem isto, _notesToken ficava com o token VELHO até um 401 — e
+// nesse meio os saves (notesPatch) tomavam 401 e viravam rascunho pendente que NÃO subia
+// pro banco (o funcionário via a edição na tela, mas ela nunca chegava no servidor).
+// onAuthStateChange dispara em INITIAL_SESSION / SIGNED_IN / TOKEN_REFRESHED / SIGNED_OUT.
+supabase.auth.onAuthStateChange((_event, session) => {
+  _notesToken = session?.access_token ?? null
+})
+
+// No 401: limpa o cache E força um refresh (o auto-refresh pode ter falhado após sleep /
+// queda de rede); o listener acima re-popula com o token novo, e o rascunho pendente sobe
+// no próximo flush.
+function invalidateNotesToken(): void {
+  _notesToken = null
+  void supabase.auth.refreshSession().catch(() => {})
+}
+
 let _deletionInProgress = false
 // Menções já notificadas nesta sessão, por nota (evita re-chamar o RPC a cada save;
 // o RPC também deduplica no banco). noteId -> set de userIds.
@@ -149,7 +167,7 @@ async function notesFetch<T>(path: string): Promise<T[]> {
     })
 
     if (response.status === 401) {
-      _notesToken = null
+      invalidateNotesToken()
       throw new Error('Token expired')
     }
 
@@ -190,7 +208,7 @@ async function notesDelete(table: string, id: string): Promise<{ count: number; 
     })
 
     if (response.status === 401) {
-      _notesToken = null
+      invalidateNotesToken()
       return { count: 0, error: 'Token expired' }
     }
     if (!response.ok) {
@@ -239,7 +257,7 @@ async function notesPatch(table: string, id: string, body: Record<string, unknow
     })
 
     if (response.status === 401) {
-      _notesToken = null
+      invalidateNotesToken()
       throw new Error('Token expired')
     }
 

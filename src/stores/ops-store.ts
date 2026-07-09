@@ -1018,26 +1018,43 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
    * Returns a cleanup function to be called on unmount.
    */
   setupAutoReconciliation: () => {
-    // Ao voltar o foco pro app: recarrega shares + refaz ops + notas (pega
-    // categoria/nota compartilhada mesmo se o Realtime de shares não disparou).
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void useSharingStore.getState().loadShares().then(() => {
-          void get().refreshOpsSnapshot('window-focus').then(() => {
-            void useNotesStore.getState().loadNotes()
-          })
-        })
+    // Reconecta o Realtime SE o socket não está aberto. Depois de sleep/queda de rede
+    // o WebSocket costuma morrer CALADO (sem disparar CLOSED → sem o retry de 5s), e o
+    // subscribeToOpsChanges só rodava no login → o tempo real ficava morto até um sync
+    // manual. `isConnected()` é o estado real do socket; quando aberto, é no-op (sem churn).
+    const reconnectRealtime = () => {
+      if (!supabase.realtime.isConnected()) {
+        get().subscribeToOpsChanges()
+        const activeId = useNotesStore.getState().activeTabId
+        if (activeId) useNotesStore.getState().subscribeToNote(activeId)
       }
     }
 
+    // Ao voltar o foco pro app: reconecta o tempo real + recarrega shares/ops/notas
+    // (pega categoria/nota compartilhada mesmo se o Realtime de shares não disparou).
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      reconnectRealtime()
+      void useSharingStore.getState().loadShares().then(() => {
+        void get().refreshOpsSnapshot('window-focus').then(() => {
+          void useNotesStore.getState().loadNotes()
+        })
+      })
+    }
+
     document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('online', reconnectRealtime)
+    window.addEventListener('focus', reconnectRealtime)
 
     const pollingTimer = setInterval(() => {
+      reconnectRealtime() // rede de segurança: reconecta em ≤10s se o socket caiu calado
       void get().refreshOpsSnapshot('polling-10s')
     }, 10_000)
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('online', reconnectRealtime)
+      window.removeEventListener('focus', reconnectRealtime)
       clearInterval(pollingTimer)
     }
   },

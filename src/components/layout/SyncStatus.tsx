@@ -12,6 +12,7 @@ import { useOpsStore } from '../../stores/ops-store'
  */
 export default function SyncStatus() {
   const pendingSync = useNotesStore((s) => s.pendingSync)
+  const realtimeStatus = useOpsStore((s) => s.realtimeStatus)
   const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true))
   const [syncing, setSyncing] = useState(false)
 
@@ -26,8 +27,12 @@ export default function SyncStatus() {
     }
   }, [])
 
+  // A nuvem reflete TAMBÉM a saúde do tempo real: se o canal não está 'live', mostra
+  // "reconectando" (âmbar) em vez de fingir que está tudo sincronizado (verde).
   const state: 'offline' | 'pending' | 'live' =
-    !online ? 'offline' : syncing || pendingSync > 0 ? 'pending' : 'live'
+    !online ? 'offline'
+      : (syncing || pendingSync > 0 || realtimeStatus !== 'live') ? 'pending'
+        : 'live'
 
   const cfg = {
     offline: {
@@ -42,7 +47,9 @@ export default function SyncStatus() {
       spin: true,
       title: syncing
         ? 'Atualizando com o Mileto Ops…'
-        : `Falta sincronizar${pendingSync > 0 ? ` (${pendingSync})` : ''} — clique para sincronizar agora`,
+        : pendingSync > 0
+          ? `Falta sincronizar (${pendingSync}) — clique para sincronizar agora`
+          : 'Reconectando o tempo real… — clique para forçar agora',
     },
     live: {
       Icon: Cloud,
