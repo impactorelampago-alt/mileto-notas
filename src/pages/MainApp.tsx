@@ -18,6 +18,7 @@ import DeleteSectionModal from '../components/ui/DeleteSectionModal'
 import ConnectModal from '../components/ui/ConnectModal'
 import QuickSearch from '../components/ui/QuickSearch'
 import SharePickerModal from '../components/ui/SharePickerModal'
+import ConfirmModal from '../components/ui/ConfirmModal'
 import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
 import { loadDrafts, removeDraft, loadSession, saveSession } from '../lib/local-drafts'
@@ -375,6 +376,8 @@ export default function MainApp() {
           onClose={() => setSharePickerTarget(null)}
         />
       )}
+
+      <ConfirmModal />
     </div>
   )
 }

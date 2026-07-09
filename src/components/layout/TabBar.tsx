@@ -50,6 +50,7 @@ export default function TabBar() {
   const isDono = useAuthStore((s) => s.isDono())
   const noteShares = useSharingStore((s) => s.noteShares)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
+  const openConfirm = useUIStore((s) => s.openConfirm)
 
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -287,6 +288,25 @@ export default function TabBar() {
     void toggleComplete(noteId)
   }
 
+  // Confirmações (excluir / concluir-reabrir) — via ConfirmModal genérico.
+  const askConclude = (noteId: string, done: boolean) => {
+    openConfirm({
+      title: done ? 'Reabrir nota' : 'Concluir nota',
+      message: done ? 'Deseja reabrir esta nota?' : 'Deseja concluir esta nota?',
+      confirmLabel: done ? 'Reabrir' : 'Concluir',
+      onConfirm: () => concludeNote(noteId),
+    })
+  }
+  const askDelete = (noteId: string) => {
+    openConfirm({
+      title: 'Excluir nota',
+      message: 'Tem certeza que deseja excluir esta nota?\nEsta ação não pode ser desfeita.',
+      confirmLabel: 'Excluir',
+      danger: true,
+      onConfirm: () => { void deleteNote(noteId) },
+    })
+  }
+
   const handleCreateNote = async () => {
     if (isSubmitting || !activeSectionId) return
     setIsSubmitting(true)
@@ -492,7 +512,7 @@ export default function TabBar() {
                      A nota NÃO sai da categoria — só muda de cor (e risca o título). */}
                   {canComplete && (
                     <span
-                      onClick={(e) => { e.stopPropagation(); concludeNote(noteId) }}
+                      onClick={(e) => { e.stopPropagation(); askConclude(noteId, isDone) }}
                       title={isDone ? 'Concluída — clique para reabrir' : 'Concluir'}
                       className="flex shrink-0 items-center justify-center"
                       style={{
@@ -510,7 +530,7 @@ export default function TabBar() {
 
                   {!viewAll && canDeleteNote(note) && (
                     <span
-                      onClick={(e) => { e.stopPropagation(); void deleteNote(noteId) }}
+                      onClick={(e) => { e.stopPropagation(); askDelete(noteId) }}
                       title="Excluir nota"
                       className="flex shrink-0 items-center justify-center"
                       style={{ width: 18, height: 18, borderRadius: 4, color: '#71717a', transition: 'background-color 140ms, color 140ms' }}
@@ -655,7 +675,7 @@ export default function TabBar() {
                 onClick={() => {
                   const id = contextMenuNoteId
                   setContextMenuNoteId(null)
-                  if (id) concludeNote(id)
+                  if (id) askConclude(id, ctxDone)
                 }}
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12.5px] transition-colors hover:bg-zinc-800"
                 style={{ color: '#6ee7b7' }}
@@ -687,7 +707,7 @@ export default function TabBar() {
                 onClick={() => {
                   const id = contextMenuNoteId
                   setContextMenuNoteId(null)
-                  if (id) void deleteNote(id)
+                  if (id) askDelete(id)
                 }}
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12.5px] text-red-400 transition-colors hover:bg-zinc-800"
               >

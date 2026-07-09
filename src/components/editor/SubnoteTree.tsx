@@ -38,6 +38,7 @@ export default function SubnoteTree() {
   const toggleSide = useUIStore((s) => s.toggleSubnoteSide)
   const toggleCollapsed = useUIStore((s) => s.toggleSubnoteCollapsed)
   const setWidth = useUIStore((s) => s.setSubnoteWidth)
+  const openConfirm = useUIStore((s) => s.openConfirm)
 
   const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -298,7 +299,12 @@ export default function SubnoteTree() {
 
                 {canEditRoot && (isActive || isHovered) && (
                   <button
-                    onClick={() => void deleteNote(note.id)}
+                    onClick={() => openConfirm({
+                      title: 'Excluir subnota',
+                      message: 'Excluir esta subnota?\nEsta ação não pode ser desfeita.',
+                      confirmLabel: 'Excluir', danger: true,
+                      onConfirm: () => { void deleteNote(note.id) },
+                    })}
                     className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-zinc-800 hover:text-red-400"
                     style={{ color: '#71717a' }}
                     title="Excluir subnota"

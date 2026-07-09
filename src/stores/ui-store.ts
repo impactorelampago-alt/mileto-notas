@@ -41,6 +41,8 @@ interface UIState {
   sharePickerTarget: { kind: 'category' | 'note'; id: string; label: string } | null
   /** Nota cuja @menção do usuário deve piscar (deep-link da notificação). O Editor consome. */
   flashMentionNoteId: string | null
+  /** Diálogo de confirmação genérico (excluir/concluir/etc). null = fechado. */
+  confirm: { title: string; message?: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void } | null
   // Painel de subnotas (preferências persistidas em localStorage)
   subnoteSide: SubnoteSide
   subnoteCollapsed: boolean
@@ -67,6 +69,8 @@ interface UIState {
   setSaveState: (s: 'idle' | 'saving' | 'saved') => void
   setSharePickerTarget: (t: { kind: 'category' | 'note'; id: string; label: string } | null) => void
   setFlashMentionNoteId: (id: string | null) => void
+  openConfirm: (cfg: { title: string; message?: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void }) => void
+  closeConfirm: () => void
   toggleSubnoteSide: () => void
   toggleSubnoteCollapsed: () => void
   setSubnoteWidth: (w: number) => void
@@ -98,6 +102,7 @@ export const useUIStore = create<UIState>()((set) => ({
   saveState: 'idle',
   sharePickerTarget: null,
   flashMentionNoteId: null,
+  confirm: null,
   subnoteSide: lsGet(LS_SUBNOTE_SIDE) === 'right' ? 'right' : 'left',
   subnoteCollapsed: lsGet(LS_SUBNOTE_COLLAPSED) === '1',
   subnoteWidth: readSubnoteWidth(),
@@ -123,6 +128,8 @@ export const useUIStore = create<UIState>()((set) => ({
   setSaveState: (s) => set({ saveState: s }),
   setSharePickerTarget: (t) => set({ sharePickerTarget: t }),
   setFlashMentionNoteId: (id) => set({ flashMentionNoteId: id }),
+  openConfirm: (cfg) => set({ confirm: cfg }),
+  closeConfirm: () => set({ confirm: null }),
   toggleSubnoteSide: () =>
     set((s) => {
       const next: SubnoteSide = s.subnoteSide === 'left' ? 'right' : 'left'

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ImagePlus, Copy, Check, Trash2, X, XCircle, Loader2, AtSign } from 'lucide-react'
+import { ImagePlus, Copy, Check, Trash2, X, XCircle, Loader2, AtSign, ChevronDown, ChevronUp } from 'lucide-react'
 import { useMediaStore, ACCEPT_ATTR } from '../../stores/media-store'
 import type { NoteMedia } from '../../lib/types'
 
@@ -28,6 +28,14 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [failedId, setFailedId] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<NoteMedia | null>(null)
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('notas:media-collapsed') === '1' } catch { return false }
+  })
+  const toggleCollapsed = () => setCollapsed((c) => {
+    const next = !c
+    try { localStorage.setItem('notas:media-collapsed', next ? '1' : '0') } catch { /* storage indisponível */ }
+    return next
+  })
   const [flashId, setFlashId] = useState<string | null>(null)
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -131,7 +139,22 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
           <ImagePlus size={15} />
           Arraste, cole (Ctrl+V) ou clique para adicionar imagem
         </button>
+      ) : collapsed ? (
+        <button
+          onClick={toggleCollapsed}
+          className="flex w-full items-center gap-2"
+          style={{ height: 30, padding: '0 16px', color: '#8a8a92', fontSize: 12, backgroundColor: 'transparent' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = '#c4c4c7' }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = '#8a8a92' }}
+          title="Mostrar mídias"
+        >
+          <ImagePlus size={13} />
+          {items.length} {items.length === 1 ? 'mídia' : 'mídias'}
+          {uploading > 0 ? ` · ${uploading} enviando…` : ''}
+          <ChevronUp size={14} style={{ marginLeft: 'auto' }} />
+        </button>
       ) : (
+        <div className="relative">
         <div
           className="flex items-center gap-2.5 overflow-x-auto"
           style={{
@@ -251,6 +274,18 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
               <ImagePlus size={18} />
             </button>
           )}
+        </div>
+          {/* Recolher a faixa de mídias */}
+          <button
+            onClick={toggleCollapsed}
+            className="absolute flex items-center justify-center rounded-md"
+            style={{ top: 6, right: 8, width: 22, height: 22, color: '#8a8a92', backgroundColor: 'rgba(30,30,30,0.7)', backdropFilter: 'blur(2px)' }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = '#e4e4e4' }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = '#8a8a92' }}
+            title="Recolher mídias"
+          >
+            <ChevronDown size={14} />
+          </button>
         </div>
       )}
 
