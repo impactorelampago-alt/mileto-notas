@@ -20,6 +20,7 @@ export default function SubnoteTree() {
   const openTab = useNotesStore((s) => s.openTab)
   const setActiveTab = useNotesStore((s) => s.setActiveTab)
   const createSubnote = useNotesStore((s) => s.createSubnote)
+  const reorderSubnotes = useNotesStore((s) => s.reorderSubnotes)
   const deleteNote = useNotesStore((s) => s.deleteNote)
 
   // Permissão da RAIZ define quem pode criar/excluir subnota (a subnota herda o
@@ -41,6 +42,8 @@ export default function SubnoteTree() {
   const openConfirm = useUIStore((s) => s.openConfirm)
 
   const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null)
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [dragWidth, setDragWidth] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -74,6 +77,21 @@ export default function SubnoteTree() {
   const openNote = (noteId: string) => {
     openTab(noteId)
     setActiveTab(noteId)
+  }
+
+  // Arrastar pra reordenar (grava notes.position na nova ordem).
+  const handleReorderDrop = (targetId: string) => {
+    setOverId(null)
+    const src = dragId
+    setDragId(null)
+    if (!src || src === targetId) return
+    const ids = subnotes.map((n) => n.id)
+    const from = ids.indexOf(src)
+    const to = ids.indexOf(targetId)
+    if (from < 0 || to < 0) return
+    ids.splice(from, 1)
+    ids.splice(to, 0, src)
+    void reorderSubnotes(ids)
   }
 
   // Cria a subnota já e abre — SEM pedir título. O título vem da 1ª linha do
@@ -278,8 +296,19 @@ export default function SubnoteTree() {
               <div
                 key={note.id}
                 className="group flex items-center gap-1"
+                draggable={canEditRoot}
+                onDragStart={(e) => { setDragId(note.id); e.dataTransfer.effectAllowed = 'move' }}
+                onDragOver={(e) => { if (dragId && dragId !== note.id) { e.preventDefault(); setOverId(note.id) } }}
+                onDrop={(e) => { e.preventDefault(); handleReorderDrop(note.id) }}
+                onDragEnd={() => { setDragId(null); setOverId(null) }}
                 onMouseEnter={() => setHoveredNoteId(note.id)}
                 onMouseLeave={() => setHoveredNoteId(null)}
+                style={{
+                  opacity: dragId === note.id ? 0.4 : 1,
+                  boxShadow: overId === note.id && dragId !== note.id ? 'inset 0 2px 0 #10b981' : undefined,
+                  borderRadius: 6,
+                  cursor: canEditRoot ? 'grab' : undefined,
+                }}
               >
                 <button
                   onClick={() => openNote(note.id)}

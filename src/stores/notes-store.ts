@@ -306,6 +306,8 @@ interface NotesState {
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
   createSubnote: (parentNoteId: string, options?: { title?: string }) => Promise<Note | null>
+  /** Reordena as subnotas (arrastar) — grava `notes.position` 0,1,2,… na nova ordem. */
+  reorderSubnotes: (orderedIds: string[]) => Promise<void>
   updateNote: (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'priority' | 'category_id' | 'is_pinned' | 'is_archived' | 'client_id' | 'task_id' | 'due_date'>>) => Promise<void>
   completeNote: (noteId: string) => Promise<void>
   /** Alterna concluída/pendente: conclui (status→DONE) ou desfaz (volta à origem). */
@@ -948,6 +950,19 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       activeTabId: s.activeTabId === optimistic.id ? created.id : s.activeTabId,
     }))
     return created
+  },
+
+  reorderSubnotes: async (orderedIds) => {
+    if (orderedIds.length === 0) return
+    // Otimista: position = índice na nova ordem (0,1,2,…). getSubnotes ordena por position.
+    set((s) => ({
+      notes: s.notes.map((n) => {
+        const idx = orderedIds.indexOf(n.id)
+        return idx >= 0 && idx !== n.position ? { ...n, position: idx } : n
+      }),
+    }))
+    // Persiste cada um (best-effort; a RLS valida user_can_edit_note do pai).
+    await Promise.all(orderedIds.map((id, idx) => notesPatch('notes', id, { position: idx }).catch(() => false)))
   },
 
   createSubnote: async (parentNoteId, options = {}) => {
