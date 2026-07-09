@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ImagePlus, Copy, Check, Trash2, X, XCircle, Loader2, AtSign, ChevronDown, ChevronUp } from 'lucide-react'
-import { useMediaStore, ACCEPT_ATTR } from '../../stores/media-store'
+import { ImagePlus, Copy, Check, Trash2, X, XCircle, Loader2, AtSign, ChevronDown, ChevronUp, File as FileIcon, Play, Download } from 'lucide-react'
+import { useMediaStore, ACCEPT_ATTR, isImageMime, isVideoMime, isRasterImage } from '../../stores/media-store'
 import type { NoteMedia } from '../../lib/types'
 
 interface Props {
@@ -96,6 +96,18 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
     [copyMedia],
   )
 
+  // Abre/baixa a mídia no navegador (vídeo grande / arquivo). window.open cai no
+  // setWindowOpenHandler do main → shell.openExternal (abre/baixa no navegador padrão).
+  const openMedia = useCallback((m: NoteMedia) => {
+    const u = urlFor(m)
+    if (u) window.open(u, '_blank', 'noopener,noreferrer')
+  }, [urlFor])
+
+  const extLabel = (m: NoteMedia): string => {
+    if (m.filename && m.filename.includes('.')) return m.filename.split('.').pop()!.toUpperCase().slice(0, 5)
+    return ((m.mime_type || '').split('/')[1] || 'arquivo').toUpperCase().slice(0, 5)
+  }
+
   // Esconde a faixa por completo quando não há mídia e não dá pra editar.
   if (items.length === 0 && uploading === 0 && !canEdit) return null
 
@@ -137,7 +149,7 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
           onMouseLeave={(e) => { if (!dragOver) { e.currentTarget.style.borderColor = '#3d3d3d'; e.currentTarget.style.color = '#6b6b72' } }}
         >
           <ImagePlus size={15} />
-          Arraste, cole (Ctrl+V) ou clique para adicionar imagem
+          Arraste, cole (Ctrl+V) ou clique para adicionar mídia ou arquivo
         </button>
       ) : collapsed ? (
         <button
@@ -185,16 +197,28 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
                 }}
               >
                 <button
-                  onClick={() => setLightbox(m)}
+                  onClick={() => { if (isImageMime(m.mime_type) || isVideoMime(m.mime_type)) setLightbox(m); else openMedia(m) }}
                   className="block h-full w-full"
-                  title="Ver imagem"
-                  style={{ cursor: 'zoom-in' }}
+                  title={m.filename ?? 'mídia'}
+                  style={{ cursor: isImageMime(m.mime_type) || isVideoMime(m.mime_type) ? 'zoom-in' : 'pointer' }}
                 >
-                  {url ? (
-                    <img src={url} alt={m.filename ?? 'imagem'} className="h-full w-full object-cover" draggable={false} />
-                  ) : (
+                  {!url ? (
                     <div className="flex h-full w-full items-center justify-center">
                       <Loader2 size={16} className="animate-spin" style={{ color: '#52525b' }} />
+                    </div>
+                  ) : isVideoMime(m.mime_type) ? (
+                    <div className="relative h-full w-full">
+                      <video src={url} muted preload="metadata" className="h-full w-full object-cover" />
+                      <div className="absolute inset-0 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.28)' }}>
+                        <Play size={20} fill="#fff" style={{ color: '#fff' }} />
+                      </div>
+                    </div>
+                  ) : isImageMime(m.mime_type) ? (
+                    <img src={url} alt={m.filename ?? 'imagem'} className="h-full w-full object-cover" draggable={false} />
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center" style={{ gap: 4, padding: 4 }}>
+                      <FileIcon size={22} style={{ color: '#8a8a92' }} />
+                      <span className="w-full truncate text-center" style={{ fontSize: 9, color: '#9a9aa3' }}>{extLabel(m)}</span>
                     </div>
                   )}
                 </button>
@@ -216,19 +240,32 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
                       <AtSign size={12} />
                     </button>
                   )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void handleCopy(m) }}
-                    title={isFailed ? 'Falha ao copiar' : isCopied ? 'Copiado!' : 'Copiar imagem'}
-                    className="pointer-events-auto flex items-center justify-center rounded-md"
-                    style={{
-                      width: 22, height: 22,
-                      backgroundColor: isCopied ? 'rgba(16,185,129,0.9)' : isFailed ? 'rgba(239,68,68,0.9)' : 'rgba(20,20,20,0.8)',
-                      color: isCopied ? '#06120d' : '#e4e4e4',
-                      backdropFilter: 'blur(2px)',
-                    }}
-                  >
-                    {isCopying ? <Loader2 size={12} className="animate-spin" /> : isCopied ? <Check size={12} strokeWidth={3} /> : isFailed ? <XCircle size={12} /> : <Copy size={12} />}
-                  </button>
+                  {isRasterImage(m.mime_type) ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void handleCopy(m) }}
+                      title={isFailed ? 'Falha ao copiar' : isCopied ? 'Copiado!' : 'Copiar imagem'}
+                      className="pointer-events-auto flex items-center justify-center rounded-md"
+                      style={{
+                        width: 22, height: 22,
+                        backgroundColor: isCopied ? 'rgba(16,185,129,0.9)' : isFailed ? 'rgba(239,68,68,0.9)' : 'rgba(20,20,20,0.8)',
+                        color: isCopied ? '#06120d' : '#e4e4e4',
+                        backdropFilter: 'blur(2px)',
+                      }}
+                    >
+                      {isCopying ? <Loader2 size={12} className="animate-spin" /> : isCopied ? <Check size={12} strokeWidth={3} /> : isFailed ? <XCircle size={12} /> : <Copy size={12} />}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openMedia(m) }}
+                      title="Abrir / baixar"
+                      className="pointer-events-auto flex items-center justify-center rounded-md"
+                      style={{ width: 22, height: 22, backgroundColor: 'rgba(20,20,20,0.8)', color: '#e4e4e4', backdropFilter: 'blur(2px)' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(59,130,246,0.9)' }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(20,20,20,0.8)' }}
+                    >
+                      <Download size={12} />
+                    </button>
+                  )}
                   {canEdit && (
                     <button
                       onClick={(e) => { e.stopPropagation(); void deleteMedia(noteId, m) }}
@@ -261,7 +298,7 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
           {canEdit && (
             <button
               onClick={() => inputRef.current?.click()}
-              title="Adicionar imagem (ou cole com Ctrl+V)"
+              title="Adicionar mídia ou arquivo (ou cole com Ctrl+V)"
               className="flex shrink-0 flex-col items-center justify-center gap-1"
               style={{
                 width: THUMB, height: THUMB, borderRadius: 10,
@@ -311,27 +348,46 @@ export default function NoteMediaStrip({ noteId, canEdit, onMentionImage }: Prop
               onClick={(e) => e.stopPropagation()}
             >
               {urlFor(lightbox) && (
-                <img
-                  src={urlFor(lightbox)}
-                  alt={lightbox.filename ?? 'imagem'}
-                  style={{ maxWidth: '88vw', maxHeight: '80vh', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}
-                  draggable={false}
-                />
+                isVideoMime(lightbox.mime_type) ? (
+                  <video
+                    src={urlFor(lightbox)}
+                    controls
+                    autoPlay
+                    style={{ maxWidth: '88vw', maxHeight: '80vh', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}
+                  />
+                ) : (
+                  <img
+                    src={urlFor(lightbox)}
+                    alt={lightbox.filename ?? 'imagem'}
+                    style={{ maxWidth: '88vw', maxHeight: '80vh', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}
+                    draggable={false}
+                  />
+                )
               )}
               <div className="mt-3 flex items-center gap-2">
-                <button
-                  onClick={() => void handleCopy(lightbox)}
-                  className="flex items-center gap-2 rounded-lg"
-                  style={{
-                    padding: '8px 14px',
-                    backgroundColor: copiedId === lightbox.id ? 'rgba(16,185,129,0.92)' : failedId === lightbox.id ? 'rgba(239,68,68,0.92)' : '#2a2a2a',
-                    color: copiedId === lightbox.id ? '#06120d' : '#e4e4e4',
-                    fontSize: 12.5, fontWeight: 600, border: '1px solid #3a3a3a',
-                  }}
-                >
-                  {copiedId === lightbox.id ? <Check size={14} strokeWidth={3} /> : failedId === lightbox.id ? <XCircle size={14} /> : <Copy size={14} />}
-                  {copiedId === lightbox.id ? 'Copiado!' : failedId === lightbox.id ? 'Falha ao copiar' : 'Copiar imagem'}
-                </button>
+                {isRasterImage(lightbox.mime_type) ? (
+                  <button
+                    onClick={() => void handleCopy(lightbox)}
+                    className="flex items-center gap-2 rounded-lg"
+                    style={{
+                      padding: '8px 14px',
+                      backgroundColor: copiedId === lightbox.id ? 'rgba(16,185,129,0.92)' : failedId === lightbox.id ? 'rgba(239,68,68,0.92)' : '#2a2a2a',
+                      color: copiedId === lightbox.id ? '#06120d' : '#e4e4e4',
+                      fontSize: 12.5, fontWeight: 600, border: '1px solid #3a3a3a',
+                    }}
+                  >
+                    {copiedId === lightbox.id ? <Check size={14} strokeWidth={3} /> : failedId === lightbox.id ? <XCircle size={14} /> : <Copy size={14} />}
+                    {copiedId === lightbox.id ? 'Copiado!' : failedId === lightbox.id ? 'Falha ao copiar' : 'Copiar imagem'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => openMedia(lightbox)}
+                    className="flex items-center gap-2 rounded-lg"
+                    style={{ padding: '8px 14px', backgroundColor: '#2a2a2a', color: '#e4e4e4', fontSize: 12.5, fontWeight: 600, border: '1px solid #3a3a3a' }}
+                  >
+                    <Download size={14} /> Abrir / baixar
+                  </button>
+                )}
                 <button
                   onClick={() => setLightbox(null)}
                   className="flex items-center justify-center rounded-lg"

@@ -11,9 +11,8 @@ import { copyImageToClipboard } from '../lib/clipboard-image'
  */
 const BUCKET = 'note-media'
 const SIGNED_TTL = 60 * 60 * 2 // 2 horas
+export const MAX_MEDIA_SIZE = 250 * 1024 * 1024 // 250 MB (bate com o file_size_limit do bucket)
 
-// SVG é DE PROPÓSITO excluído: createImageBitmap (usado p/ copiar via canvas)
-// falha com SVG sem dimensões intrínsecas → cópia quebraria. Só rasterizáveis.
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -22,12 +21,19 @@ const IMAGE_EXT: Record<string, string> = {
   'image/webp': 'webp',
   'image/avif': 'avif',
 }
-export const ALLOWED_IMAGE_MIME = new Set(Object.keys(IMAGE_EXT))
-export const ACCEPT_ATTR = Object.keys(IMAGE_EXT).join(',')
+// Raster que dá pra COPIAR via canvas (createImageBitmap). Vídeo/arquivo/SVG só baixam.
+const RASTER_MIME = new Set(Object.keys(IMAGE_EXT))
+export function isRasterImage(mime: string | null | undefined): boolean { return !!mime && RASTER_MIME.has(mime) }
+export function isImageMime(mime: string | null | undefined): boolean { return !!mime && mime.startsWith('image/') }
+export function isVideoMime(mime: string | null | undefined): boolean { return !!mime && mime.startsWith('video/') }
+
+// O bucket aceita QUALQUER tipo agora (vídeo + arquivos) → picker sem restrição.
+export const ACCEPT_ATTR = ''
 
 function extFor(file: File): string {
   const fromName = file.name?.includes('.') ? file.name.split('.').pop()!.toLowerCase() : ''
-  return IMAGE_EXT[file.type] ?? fromName ?? 'png'
+  if (fromName) return fromName
+  return IMAGE_EXT[file.type] ?? (file.type.split('/')[1] || 'bin')
 }
 
 interface MediaState {
@@ -83,7 +89,12 @@ export const useMediaStore = create<MediaState>()((set, get) => ({
   uploadFiles: async (noteId, files) => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) return
-    const list = Array.from(files).filter((f) => ALLOWED_IMAGE_MIME.has(f.type))
+    // Aceita QUALQUER tipo (vídeo/arquivo); só barra o que passa de 250MB (o bucket
+    // rejeitaria de qualquer forma — pré-filtrar evita upload que falha no meio).
+    const list = Array.from(files).filter((f) => {
+      if (f.size > MAX_MEDIA_SIZE) { console.warn(`[media] "${f.name}" > 250MB — ignorado`); return false }
+      return true
+    })
     if (list.length === 0) return
 
     // Decrementa o contador de "em upload" — por item, pra a fileira de
@@ -116,7 +127,7 @@ export const useMediaStore = create<MediaState>()((set, get) => ({
             .insert({
               note_id: noteId,
               storage_path: path,
-              mime_type: file.type || 'image/png',
+              mime_type: file.type || 'application/octet-stream',
               filename: file.name || null,
               created_by: userId,
             })
