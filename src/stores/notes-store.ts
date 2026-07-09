@@ -436,6 +436,9 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const sharedCatPerm = shareState.sharedWithMeCategories
       const tasks = useOpsStore.getState().tasks
       const taskStatusById = new Map(tasks.map((t) => [t.id, t.status]))
+      // Prefixo das MINHAS categorias (sou o dono): USR_<meuId32>_. Notas alheias numa
+      // categoria minha são editáveis (espaço colaborativo) — o destinatário já era.
+      const myPrefix = 'USR_' + userId.replace(/-/g, '') + '_'
 
       const localById = new Map(get().notes.map((n) => [n.id, n]))
       const merged = Array.from(byId.values()).map((note) => {
@@ -456,6 +459,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
             // Veio via categoria compartilhada
             const status = taskStatusById.get(note.task_id)
             if (status && sharedCatKeys.includes(status)) perm = sharedCatPerm[status]
+            // Ou EU sou o dono da categoria → edito as notas que outros criaram nela.
+            if (!perm && status && status.startsWith(myPrefix)) perm = 'EDIT'
           }
           if (perm) {
             base.is_shared_with_me = true
@@ -530,6 +535,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const sharedCatPerm = shareState.sharedWithMeCategories
     const sharedNotePerm = shareState.sharedWithMeNotes
     const taskStatusById = new Map(tasks.map((t) => [t.id, t.status]))
+    const myPrefix = 'USR_' + userId.replace(/-/g, '') + '_' // minhas categorias (sou dono)
 
     // Troca de conta durante os fetches acima invalida este resultado.
     if (_viewGeneration !== gen) return
@@ -545,6 +551,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           if (!perm && note.task_id) {
             const status = taskStatusById.get(note.task_id)
             if (status && sharedCatKeys.includes(status)) perm = sharedCatPerm[status]
+            if (!perm && status && status.startsWith(myPrefix)) perm = 'EDIT' // sou dono da categoria
           }
           if (perm) {
             base.is_shared_with_me = true
