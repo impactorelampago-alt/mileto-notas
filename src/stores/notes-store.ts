@@ -6,6 +6,7 @@ import { useSharingStore } from './sharing-store'
 import type { Note, NotePermission } from '../lib/types'
 import { useOpsStore } from './ops-store'
 import { normalizePriority } from '../lib/note-priority'
+import { findMentions } from '../lib/mentions-core'
 import { doneKeyForStatus } from '../lib/sections'
 import { isDoneStatus, buildStatusKey } from '../lib/status-keys'
 import { saveDraft, removeDraft, loadDrafts } from '../lib/local-drafts'
@@ -16,6 +17,9 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
 let _notesToken: string | null = null
 let _deletionInProgress = false
+// Menções já notificadas nesta sessão, por nota (evita re-chamar o RPC a cada save;
+// o RPC também deduplica no banco). noteId -> set de userIds.
+const _notifiedMentions = new Map<string, Set<string>>()
 
 /**
  * Normalização canônica de uma nota vinda do banco/realtime: garante prioridade
@@ -269,6 +273,12 @@ interface NotesState {
    * este é o único fetch que as traz pro destinatário. A RLS já autoriza a leitura.
    */
   loadSubnotesForLoadedRoots: () => Promise<void>
+  /**
+   * Detecta @menções de membros do time no conteúdo da nota e notifica (RPC
+   * `notas_notify_mention`) as menções NOVAS. Se o mencionado não tem acesso à
+   * nota, dispara `mileto:mention-no-access` (o Editor avisa + oferece compartilhar).
+   */
+  notifyMentions: (noteId: string) => Promise<void>
   /** Sobe pra nuvem os rascunhos locais pendentes (edições offline) — no `online`/foco. */
   flushPendingDrafts: () => Promise<void>
   /** Nº de rascunhos locais pendentes de subir pra nuvem (indicador de sincronização). */
@@ -628,6 +638,57 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       inheritSubnoteSharedFlags(arr)
       return { notes: arr }
     })
+  },
+
+  notifyMentions: async (noteId) => {
+    const authState = useAuthStore.getState()
+    const me = authState.user?.id
+    if (!me) return
+    // Só notifica na edição da PRÓPRIA conta (não em "Todos"/impersonação).
+    if (authState.viewAll || authState.viewingAs) return
+    const note = get().notes.find((n) => n.id === noteId)
+    if (!note) return
+
+    const team = authState.teamProfiles
+      .filter((p) => p.name && p.name.trim())
+      .map((p) => ({ id: p.id, name: (p.name as string).trim() }))
+    if (team.length === 0) return
+
+    const mentionedIds = Array.from(
+      new Set(findMentions(note.content, team).map((h) => h.userId)),
+    ).filter((id) => id !== me)
+    if (mentionedIds.length === 0) return
+
+    // Só as menções AINDA NÃO notificadas nesta sessão (o RPC também deduplica).
+    const already = _notifiedMentions.get(noteId) ?? new Set<string>()
+    const fresh = mentionedIds.filter((id) => !already.has(id))
+    if (fresh.length === 0) return
+
+    const noAccess: string[] = []
+    for (const uid of fresh) {
+      already.add(uid) // marca antes (não re-tenta em loop se falhar)
+      try {
+        const { data, error } = await supabase.rpc('notas_notify_mention', {
+          p_note_id: noteId, p_recipient: uid, p_title: note.title ?? '',
+        })
+        if (error) { console.warn('[notes] notifyMentions rpc:', error.message); continue }
+        if (data === 'no_access') {
+          const name = team.find((t) => t.id === uid)?.name
+          if (name) noAccess.push(name)
+        }
+      } catch (e) {
+        console.warn('[notes] notifyMentions:', e)
+      }
+    }
+    _notifiedMentions.set(noteId, already)
+
+    // Decisão (a)+(c): quem foi mencionado mas não tem acesso NÃO é notificado —
+    // avisa quem mencionou (o Editor mostra + oferece compartilhar a nota).
+    if (noAccess.length > 0) {
+      document.dispatchEvent(
+        new CustomEvent('mileto:mention-no-access', { detail: { noteId, names: noAccess } }),
+      )
+    }
   },
 
   /**

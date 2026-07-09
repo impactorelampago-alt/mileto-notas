@@ -39,6 +39,8 @@ interface UIState {
   showQuickSearch: boolean
   saveState: 'idle' | 'saving' | 'saved'
   sharePickerTarget: { kind: 'category' | 'note'; id: string; label: string } | null
+  /** Nota cuja @menção do usuário deve piscar (deep-link da notificação). O Editor consome. */
+  flashMentionNoteId: string | null
   // Painel de subnotas (preferências persistidas em localStorage)
   subnoteSide: SubnoteSide
   subnoteCollapsed: boolean
@@ -64,6 +66,7 @@ interface UIState {
   setShowQuickSearch: (v: boolean) => void
   setSaveState: (s: 'idle' | 'saving' | 'saved') => void
   setSharePickerTarget: (t: { kind: 'category' | 'note'; id: string; label: string } | null) => void
+  setFlashMentionNoteId: (id: string | null) => void
   toggleSubnoteSide: () => void
   toggleSubnoteCollapsed: () => void
   setSubnoteWidth: (w: number) => void
@@ -94,6 +97,7 @@ export const useUIStore = create<UIState>()((set) => ({
   showQuickSearch: false,
   saveState: 'idle',
   sharePickerTarget: null,
+  flashMentionNoteId: null,
   subnoteSide: lsGet(LS_SUBNOTE_SIDE) === 'right' ? 'right' : 'left',
   subnoteCollapsed: lsGet(LS_SUBNOTE_COLLAPSED) === '1',
   subnoteWidth: readSubnoteWidth(),
@@ -118,6 +122,7 @@ export const useUIStore = create<UIState>()((set) => ({
   setShowQuickSearch: (v) => set({ showQuickSearch: v }),
   setSaveState: (s) => set({ saveState: s }),
   setSharePickerTarget: (t) => set({ sharePickerTarget: t }),
+  setFlashMentionNoteId: (id) => set({ flashMentionNoteId: id }),
   toggleSubnoteSide: () =>
     set((s) => {
       const next: SubnoteSide = s.subnoteSide === 'left' ? 'right' : 'left'

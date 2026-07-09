@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react'
-import { Bell, CheckCheck, CheckCircle2, FilePlus2 } from 'lucide-react'
+import { Bell, CheckCheck, CheckCircle2, FilePlus2, AtSign } from 'lucide-react'
 import { useNotificationsStore } from '../../stores/notifications-store'
 
 /** Tempo relativo curto em pt-BR (sem dependência externa). */
@@ -129,7 +129,8 @@ export default function NotificationBell() {
                 const actor = (n.actor_id && actorNames[n.actor_id]) || 'Alguém'
                 const isUnread = !n.read_at
                 const isNoteCreated = n.type === 'note_created'
-                const verb = isNoteCreated ? 'adicionou uma nota:' : 'concluiu:'
+                const isMention = n.type === 'mention'
+                const verb = isMention ? 'mencionou você em:' : isNoteCreated ? 'adicionou uma nota:' : 'concluiu:'
                 return (
                   <button
                     key={n.id}
@@ -144,7 +145,9 @@ export default function NotificationBell() {
                     onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#262626' }}
                     onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = isUnread ? 'rgba(16,185,129,0.06)' : 'transparent' }}
                   >
-                    {isNoteCreated ? (
+                    {isMention ? (
+                      <AtSign size={15} style={{ color: '#93c5fd', flexShrink: 0, marginTop: 1 }} />
+                    ) : isNoteCreated ? (
                       <FilePlus2 size={15} style={{ color: '#60a5fa', flexShrink: 0, marginTop: 1 }} />
                     ) : (
                       <CheckCircle2 size={15} style={{ color: '#34d399', flexShrink: 0, marginTop: 1 }} />

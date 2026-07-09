@@ -57,6 +57,11 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
         color: '#6ee7b7', cursor: 'pointer', fontSize: '0.82em', userSelect: 'none',
       },
       '.cm-img-chip:hover': { backgroundColor: 'rgba(16,185,129,0.22)' },
+      // menção @Nome de membro do time
+      '.cm-mention': {
+        color: '#93c5fd', backgroundColor: 'rgba(59,130,246,0.16)', borderRadius: '4px',
+        padding: '0 3px', fontWeight: '500',
+      },
     },
     { dark: true },
   )

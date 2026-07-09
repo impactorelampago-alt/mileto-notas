@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react
 import {
   NotebookPen, Bold, Italic, Underline, Strikethrough, Highlighter, Code,
   Heading1, Heading2, List, ListOrdered, ListChecks, Quote, Link2, Minus, Building2, Calendar,
+  Share2, AtSign, X as XIcon,
 } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
@@ -43,10 +44,15 @@ export default function Editor() {
   useAuthStore((s) => s.editableIds) // re-renderiza quando as permissões carregam (canEditNote depende delas)
   const canEditNote = useAuthStore((s) => s.canEditNote)
   const isDono = useAuthStore((s) => s.isDono())
+  const myName = useAuthStore((s) => s.profile?.name ?? null)
   const { fontSize, showLineNumbers, wordWrap, setCursor, setSaveState } = useUIStore()
   const subnoteSide = useUIStore((s) => s.subnoteSide)
+  const flashMentionNoteId = useUIStore((s) => s.flashMentionNoteId)
+  const setFlashMentionNoteId = useUIStore((s) => s.setFlashMentionNoteId)
+  const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
+  const [mentionNoAccess, setMentionNoAccess] = useState<{ noteId: string; names: string[] } | null>(null)
   const [contextMenu, setContextMenu] = useState<CtxInfo | null>(null)
   const [annotationDraft, setAnnotationDraft] = useState<{ text: string; start: number; end: number } | null>(null)
   const [showAnnotationModal, setShowAnnotationModal] = useState(false)
@@ -145,6 +151,7 @@ export default function Editor() {
         const patch: { content: string; title?: string } = { content: newContent }
         if (nextTitle !== '' && cur?.title !== nextTitle) patch.title = nextTitle
         await updateNote(id, patch)
+        void useNotesStore.getState().notifyMentions(id) // avisa @menções novas
         setSaveState('saved')
         if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
         savedTimerRef.current = setTimeout(() => setSaveState('idle'), 1500)
@@ -191,6 +198,27 @@ export default function Editor() {
     el.style.left = `${left}px`
     el.style.top = `${top}px`
   }, [contextMenu])
+
+  // Deep-link da @menção: quando ESTA nota é o alvo do flash, acha "@meuNome" e pisca a linha.
+  useEffect(() => {
+    if (!flashMentionNoteId || !activeNote || activeNote.id !== flashMentionNoteId) return
+    if (!myName) { setFlashMentionNoteId(null); return }
+    const t = setTimeout(() => {
+      editorRef.current?.flashText('@' + myName)
+      setFlashMentionNoteId(null)
+    }, 280) // deixa o editor montar o conteúdo da nota antes de buscar/rolar
+    return () => clearTimeout(t)
+  }, [flashMentionNoteId, activeNote, myName, setFlashMentionNoteId])
+
+  // Aviso "mencionou quem não tem acesso" (decisão (a)) — o toast oferece compartilhar (c).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ noteId: string; names: string[] }>).detail
+      if (detail?.names?.length) setMentionNoAccess(detail)
+    }
+    document.addEventListener('mileto:mention-no-access', handler)
+    return () => document.removeEventListener('mileto:mention-no-access', handler)
+  }, [])
 
   if (!activeNote) {
     return (
@@ -273,6 +301,42 @@ export default function Editor() {
               <MenuItem icon={<Building2 size={14} style={{ color: '#10b981' }} />} label="Adicionar trecho à empresa" onClick={openAnnotation} accent />
             </>
           )}
+        </div>
+      )}
+
+      {/* Aviso: mencionou quem não tem acesso → não notificou (a) + atalho compartilhar (c). */}
+      {mentionNoAccess && (
+        <div
+          className="fixed z-40 flex items-center gap-3 rounded-xl border"
+          style={{
+            left: '50%', bottom: 84, transform: 'translateX(-50%)', maxWidth: 'min(90vw, 520px)',
+            padding: '9px 10px 9px 13px', backgroundColor: '#1e1e1e', borderColor: '#3a3a3a',
+            boxShadow: '0 12px 34px rgba(0,0,0,0.45)',
+          }}
+        >
+          <AtSign size={15} style={{ color: '#93c5fd', flexShrink: 0 }} />
+          <span style={{ fontSize: 12.5, color: '#d4d4d8' }}>
+            <b style={{ color: '#e4e4e7' }}>{mentionNoAccess.names.join(', ')}</b>{' '}
+            {mentionNoAccess.names.length > 1 ? 'não têm' : 'não tem'} acesso a esta nota — a menção não foi avisada.
+          </span>
+          <button
+            onClick={() => {
+              setSharePickerTarget({ kind: 'note', id: mentionNoAccess.noteId, label: activeNote.title || 'Nota' })
+              setMentionNoAccess(null)
+            }}
+            className="flex shrink-0 items-center gap-1.5 rounded-lg transition-colors"
+            style={{ padding: '5px 10px', fontSize: 12, fontWeight: 600, color: '#06120d', backgroundColor: '#10b981' }}
+          >
+            <Share2 size={13} /> Compartilhar
+          </button>
+          <button
+            onClick={() => setMentionNoAccess(null)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-zinc-800"
+            style={{ color: '#8a8a8f' }}
+            title="Fechar"
+          >
+            <XIcon size={14} />
+          </button>
         </div>
       )}
 

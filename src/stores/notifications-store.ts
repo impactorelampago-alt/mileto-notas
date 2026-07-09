@@ -3,6 +3,7 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from './auth-store'
 import { useNotesStore } from './notes-store'
+import { useUIStore } from './ui-store'
 import { useOpsStore, SYSTEM_SUFFIXES } from './ops-store'
 import { getStatusBase } from '../lib/status-keys'
 import type { NotaNotification } from '../lib/types'
@@ -116,20 +117,18 @@ export const useNotificationsStore = create<NotificationsState>()((set, get) => 
     if (error) console.error('[notif] markAllRead:', error.message)
   },
 
-  openNotification: (n) => {
+  openNotification: async (n) => {
     void get().markRead(n.id)
     set({ isOpen: false })
-    // Best-effort: abre a nota concluída se ela estiver carregada localmente.
-    if (!n.task_id) return
     const notesStore = useNotesStore.getState()
-    const note = notesStore.notes.find((x) => x.task_id === n.task_id)
-    if (!note) return
     const opsStore = useOpsStore.getState()
-    const task = opsStore.tasks.find((t) => t.id === n.task_id)
-    if (task) {
-      // A nota concluída vive na categoria "Concluído" — navega pra onde ela está
-      // de fato: casa pela key COMPLETA; fallback por sufixo p/ DONE de sistema
-      // (tarefa compartilhada conclui no DONE do dono, key ≠ a minha).
+
+    // Navega pra seção onde a task da nota está (key completa; fallback por sufixo
+    // p/ DONE de sistema, ex.: tarefa compartilhada conclui no DONE do dono).
+    const goToSectionForTask = (taskId: string | null | undefined) => {
+      if (!taskId) return
+      const task = opsStore.tasks.find((t) => t.id === taskId)
+      if (!task) return
       let section = opsStore.sections.find((sec) => sec.key === task.status)
       if (!section) {
         const base = getStatusBase(task.status)
@@ -137,6 +136,25 @@ export const useNotificationsStore = create<NotificationsState>()((set, get) => 
       }
       if (section) opsStore.setActiveSectionId(section.key_suffix)
     }
+
+    // @menção: navega pela note_id e pede pro Editor piscar a linha da menção.
+    if (n.type === 'mention') {
+      if (!n.note_id) return
+      let note = notesStore.notes.find((x) => x.id === n.note_id)
+      if (!note) note = (await notesStore.fetchNoteById(n.note_id)) ?? undefined
+      if (!note) return
+      goToSectionForTask(note.task_id ?? n.task_id)
+      notesStore.openTab(note.id)
+      notesStore.setActiveTab(note.id)
+      useUIStore.getState().setFlashMentionNoteId(note.id)
+      return
+    }
+
+    // task_completed: abre a nota concluída (por task_id) se estiver carregada.
+    if (!n.task_id) return
+    const note = notesStore.notes.find((x) => x.task_id === n.task_id)
+    if (!note) return
+    goToSectionForTask(n.task_id)
     notesStore.openTab(note.id)
     notesStore.setActiveTab(note.id)
   },

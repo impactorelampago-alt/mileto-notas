@@ -115,6 +115,16 @@ button {
   -ms-overflow-style: none;
 }
 
+/* Flash da linha mencionada (deep-link da notificação de @menção) */
+@keyframes cm-flash-line {
+  0%, 100% { background-color: transparent; }
+  25%, 60% { background-color: rgba(59, 130, 246, 0.32); }
+}
+.cm-flash-line {
+  animation: cm-flash-line 1.4s ease-in-out;
+  border-radius: 3px;
+}
+
 /* Acessibilidade: respeita quem prefere menos movimento */
 @media (prefers-reduced-motion: reduce) {
   *,

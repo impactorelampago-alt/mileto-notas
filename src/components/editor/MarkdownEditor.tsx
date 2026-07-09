@@ -6,10 +6,12 @@ import { EditorState, Compartment, Annotation } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
+import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
 import type { SyntaxNode } from '@lezer/common'
 import {
   editorTheme, mdHighlight, livePreview, listKeymap, tabKeymap, applyFormat as doFormat, type FormatKind,
 } from './markdown-cm'
+import { mentionCompletionSource, mentionHighlight, flashField, flashLineEffect } from './mentions'
 
 export interface MarkdownEditorHandle {
   applyFormat: (kind: FormatKind) => void
@@ -17,6 +19,8 @@ export interface MarkdownEditorHandle {
   selectAll: () => void
   getSelection: () => { text: string; from: number; to: number }
   insertAtCursor: (text: string) => void
+  /** Acha `needle` no texto, rola até a linha e a pisca (~1,5s). Deep-link da menção. */
+  flashText: (needle: string) => void
 }
 
 interface Props {
@@ -94,6 +98,15 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       v.dispatch(v.state.replaceSelection(text))
       v.focus()
     },
+    flashText: (needle) => {
+      const v = viewRef.current
+      if (!v || !needle) return
+      const idx = v.state.doc.toString().indexOf(needle)
+      if (idx < 0) return
+      const line = v.state.doc.lineAt(idx)
+      v.dispatch({ effects: [flashLineEffect.of({ from: line.from }), EditorView.scrollIntoView(idx, { y: 'center' })] })
+      window.setTimeout(() => viewRef.current?.dispatch({ effects: flashLineEffect.of(null) }), 1600)
+    },
   }))
 
   // Cria a view UMA vez.
@@ -114,13 +127,16 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
         markdown({ base: markdownLanguage, addKeymap: false }), // Enter/listas ficam com o listKeymap nosso
         syntaxHighlighting(mdHighlight),
         livePreview,
+        mentionHighlight,
+        flashField,
+        autocompletion({ override: [mentionCompletionSource], defaultKeymap: false, icons: false }),
         wrapC.current.of(propsRef.current.wordWrap ? EditorView.lineWrapping : []),
         themeC.current.of(editorTheme(propsRef.current.fontSize)),
         roC.current.of([
           EditorState.readOnly.of(propsRef.current.readOnly),
           EditorView.editable.of(!propsRef.current.readOnly),
         ]),
-        keymap.of([...listKeymap, ...tabKeymap, ...formatShortcuts, ...defaultKeymap, ...historyKeymap]),
+        keymap.of([...completionKeymap, ...listKeymap, ...tabKeymap, ...formatShortcuts, ...defaultKeymap, ...historyKeymap]),
         EditorView.updateListener.of((u) => {
           const isExternal = u.transactions.some((tr) => tr.annotation(External))
           if (u.docChanged && !isExternal) {
