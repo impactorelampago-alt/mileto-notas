@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import {
   NotebookPen, Bold, Italic, Underline, Strikethrough, Highlighter, Code,
   Heading1, Heading2, List, ListOrdered, ListChecks, Quote, Link2, Minus, Building2, Calendar,
@@ -15,6 +15,7 @@ import NoteDetailBar from './NoteDetailBar'
 import SubnoteTree from './SubnoteTree'
 import MarkdownEditor, { type MarkdownEditorHandle } from './MarkdownEditor'
 import type { FormatKind } from './markdown-cm'
+import { usePresenceStore } from '../../stores/presence-store'
 
 // Título = 1ª linha não-vazia, limpa dos marcadores markdown (fica bonito na aba e
 // na task do Ops, que mostra tasks.title).
@@ -51,6 +52,11 @@ export default function Editor() {
   const flashMentionNoteId = useUIStore((s) => s.flashMentionNoteId)
   const setFlashMentionNoteId = useUIStore((s) => s.setFlashMentionNoteId)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
+  const meId = useAuthStore((s) => s.user?.id ?? null)
+  const peers = usePresenceStore((s) => s.peers)
+  const joinPresence = usePresenceStore((s) => s.join)
+  const leavePresence = usePresenceStore((s) => s.leave)
+  const setPresenceCursor = usePresenceStore((s) => s.setLocalCursor)
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
   const [mentionNoAccess, setMentionNoAccess] = useState<{ noteId: string; names: string[] } | null>(null)
@@ -180,6 +186,20 @@ export default function Editor() {
   )
 
   const onCursor = useCallback((line: number, col: number) => setCursor(line, col), [setCursor])
+  const onSelect = useCallback((anchor: number, head: number) => setPresenceCursor(anchor, head), [setPresenceCursor])
+
+  // Presença colaborativa: entra no canal da nota ativa (nome/cor) e sai ao trocar/fechar.
+  const peerList = useMemo(() => Object.values(peers), [peers])
+  const remoteCursors = useMemo(
+    () => peerList.map((p) => ({ userId: p.userId, name: p.name, color: p.color, anchor: p.anchor, head: p.head })),
+    [peerList],
+  )
+  useEffect(() => {
+    const id = activeNote?.id
+    if (!id || !meId || !myName) return
+    joinPresence(id, { id: meId, name: myName })
+    return () => leavePresence()
+  }, [activeNote?.id, meId, myName, joinPresence, leavePresence])
 
   const onPasteImage = useCallback(
     (files: File[]) => {
@@ -256,13 +276,33 @@ export default function Editor() {
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
       <NoteDetailBar />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
         {subnoteSide === 'left' && <SubnoteTree />}
+        {peerList.length > 0 && (
+          <div className="pointer-events-none absolute z-10 flex items-center gap-1" style={{ top: 8, right: 14 }}>
+            {peerList.map((p) => (
+              <span
+                key={p.userId}
+                title={`${p.name} está editando`}
+                className="flex items-center gap-1 rounded-full"
+                style={{
+                  backgroundColor: p.color, color: '#fff', fontSize: 11, fontWeight: 600,
+                  padding: '2px 9px', boxShadow: '0 1px 4px rgba(0,0,0,0.35)', whiteSpace: 'nowrap',
+                }}
+              >
+                <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#fff', opacity: 0.9 }} />
+                {p.name}
+              </span>
+            ))}
+          </div>
+        )}
         <MarkdownEditor
           ref={editorRef}
           value={localContent}
           onChange={handleContentChange}
           onCursor={onCursor}
+          onSelect={onSelect}
+          remoteCursors={remoteCursors}
           onPasteImage={onPasteImage}
           onContextMenu={(info) => { if (isReadOnly && !info.hasSelection) return; setContextMenu(info) }}
           readOnly={isReadOnly}

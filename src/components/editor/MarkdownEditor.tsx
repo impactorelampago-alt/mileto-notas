@@ -1,8 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import {
   EditorView, keymap, lineNumbers, drawSelection, placeholder as cmPlaceholder,
+  Decoration, WidgetType, type DecorationSet,
 } from '@codemirror/view'
-import { EditorState, Compartment, Annotation } from '@codemirror/state'
+import { EditorState, Compartment, Annotation, StateField, StateEffect } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
@@ -23,6 +24,8 @@ export interface MarkdownEditorHandle {
   flashText: (needle: string) => void
 }
 
+export interface RemoteCursor { userId: string; name: string; color: string; anchor: number; head: number }
+
 interface Props {
   value: string
   onChange: (v: string) => void
@@ -34,11 +37,85 @@ interface Props {
   wordWrap: boolean
   fontSize: number
   placeholder?: string
+  /** Cursores/seleções de OUTRAS pessoas na mesma nota (presença colaborativa). */
+  remoteCursors?: RemoteCursor[]
+  /** Seleção local mudou (anchor/head no doc) — pra transmitir a presença. */
+  onSelect?: (anchor: number, head: number) => void
 }
 
 // Marca transações que vêm de fora (sync do value) pra NÃO disparar onChange e não
 // entrar em loop com o salvamento.
 const External = Annotation.define<boolean>()
+
+// ── Presença colaborativa: cursor + etiqueta de nome das outras pessoas ──────────
+const setRemoteCursorsEffect = StateEffect.define<RemoteCursor[]>()
+
+class RemoteCaretWidget extends WidgetType {
+  constructor(readonly name: string, readonly color: string) { super() }
+  eq(o: RemoteCaretWidget) { return o.name === this.name && o.color === this.color }
+  toDOM() {
+    const w = document.createElement('span')
+    w.className = 'cm-remote-caret'
+    w.style.setProperty('--rc', this.color)
+    const label = document.createElement('span')
+    label.className = 'cm-remote-caret-label'
+    label.textContent = this.name
+    w.appendChild(label)
+    return w
+  }
+  ignoreEvent() { return true }
+}
+
+const remoteCursorsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes)
+    for (const e of tr.effects) {
+      if (e.is(setRemoteCursorsEffect)) {
+        const len = tr.state.doc.length
+        const ranges = []
+        for (const c of e.value) {
+          const head = Math.max(0, Math.min(c.head, len))
+          const anchor = Math.max(0, Math.min(c.anchor, len))
+          const from = Math.min(anchor, head)
+          const to = Math.max(anchor, head)
+          if (to > from) {
+            ranges.push(Decoration.mark({ attributes: { style: `background-color:${c.color}2e` } }).range(from, to))
+          }
+          ranges.push(Decoration.widget({ widget: new RemoteCaretWidget(c.name, c.color), side: 1 }).range(head))
+        }
+        deco = Decoration.set(ranges, true)
+      }
+    }
+    return deco
+  },
+  provide: (f) => EditorView.decorations.from(f),
+})
+
+const remoteCaretTheme = EditorView.baseTheme({
+  '.cm-remote-caret': {
+    position: 'relative',
+    borderLeft: '2px solid var(--rc)',
+    marginLeft: '-1px',
+    marginRight: '-1px',
+    pointerEvents: 'none',
+  },
+  '.cm-remote-caret-label': {
+    position: 'absolute',
+    top: '-1.35em',
+    left: '-1px',
+    backgroundColor: 'var(--rc)',
+    color: '#fff',
+    fontSize: '10px',
+    lineHeight: '1.35',
+    padding: '0 4px',
+    borderRadius: '3px 3px 3px 0',
+    whiteSpace: 'nowrap',
+    fontWeight: '600',
+    zIndex: '20',
+    userSelect: 'none',
+  },
+})
 
 // URL do Link markdown que cobre `pos` (ou null). Usado pro clique-abre-link.
 function linkUrlAt(state: EditorState, pos: number): string | null {
@@ -129,6 +206,8 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
         livePreview,
         mentionHighlight,
         flashField,
+        remoteCursorsField,
+        remoteCaretTheme,
         autocompletion({ override: [mentionCompletionSource], defaultKeymap: false, icons: false }),
         wrapC.current.of(propsRef.current.wordWrap ? EditorView.lineWrapping : []),
         themeC.current.of(editorTheme(propsRef.current.fontSize)),
@@ -143,9 +222,10 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
             propsRef.current.onChange(u.state.doc.toString())
           }
           if (u.selectionSet || u.docChanged) {
-            const head = u.state.selection.main.head
-            const line = u.state.doc.lineAt(head)
-            propsRef.current.onCursor(line.number, head - line.from + 1)
+            const main = u.state.selection.main
+            const line = u.state.doc.lineAt(main.head)
+            propsRef.current.onCursor(line.number, main.head - line.from + 1)
+            propsRef.current.onSelect?.(main.anchor, main.head)
           }
         }),
         EditorView.domEventHandlers({
@@ -245,6 +325,11 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
   useEffect(() => {
     viewRef.current?.dispatch({ effects: themeC.current.reconfigure(editorTheme(props.fontSize)) })
   }, [props.fontSize])
+
+  // Cursores/seleções das outras pessoas (presença) → redesenha as decorações.
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: setRemoteCursorsEffect.of(props.remoteCursors ?? []) })
+  }, [props.remoteCursors])
 
   return <div ref={parent} className="min-w-0 flex-1 overflow-hidden" style={{ opacity: props.readOnly ? 0.9 : 1 }} />
 })
