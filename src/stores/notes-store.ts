@@ -604,11 +604,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     if (authState.viewAll) return
 
     const gen = _viewGeneration
-    // Raízes ALHEIAS na tela — as MINHAS subnotas já vêm por creator_id no loadNotes.
-    const foreignRootIds = get().notes
-      .filter((n) => n.parent_note_id === null && n.creator_id !== userId)
+    // TODAS as raízes na tela (próprias E alheias). Antes só buscava as ALHEIAS, supondo
+    // que "as minhas subnotas já vêm por creator_id no loadNotes" — mas isso IGNORAVA as
+    // subnotas que OUTROS criam sob a MINHA nota (categoria compartilhada/delegação): elas
+    // têm creator alheio + task_id=null, então NENHUM loader as pegava (loadNotes busca por
+    // creator=eu / note_shares / tasks da categoria; subnota não casa nenhum). Ex.: nota do
+    // Gabriel com subnota criada pelo Gustavo → o Gabriel via 0 subnotas. Agora busco em
+    // toda raiz; a RLS ("Users can view subnotes from accessible parent notes") filtra o
+    // acessível (add-only + dedup; a reconciliação de deleção só toca raízes cujo lote respondeu).
+    const rootIds = get().notes
+      .filter((n) => n.parent_note_id === null)
       .map((n) => n.id)
-    if (foreignRootIds.length === 0) return
+    if (rootIds.length === 0) return
 
     // Busca em lotes para não estourar o tamanho da URL. A RLS ("Users can view
     // subnotes from accessible parent notes") só retorna as subnotas cuja raiz o
@@ -616,8 +623,8 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // lote respondeu OK; só reconcilio deleção nelas (erro de rede não apaga nada).
     const fetched: Note[] = []
     const okRoots = new Set<string>()
-    for (let i = 0; i < foreignRootIds.length; i += 100) {
-      const batch = foreignRootIds.slice(i, i + 100)
+    for (let i = 0; i < rootIds.length; i += 100) {
+      const batch = rootIds.slice(i, i + 100)
       const idList = batch.map((id) => `"${id}"`).join(',')
       try {
         const rows = await notesFetch<Note>(
