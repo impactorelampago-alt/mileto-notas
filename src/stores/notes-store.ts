@@ -660,9 +660,24 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           changed = true
         }
       }
-      // (2) Adiciona as subnotas alheias novas.
+      // (2) Adiciona as subnotas novas E ATUALIZA o conteúdo das já carregadas.
+      // Esta é a REDE DE SEGURANÇA do conteúdo de subnota: o realtime é best-effort e,
+      // se cair (sleep/queda de rede), a subnota ALHEIA ficava CONGELADA — o loadNotes só
+      // PRESERVA a cópia local de subnota de terceiro (não refaz o conteúdo) e este loader
+      // era add-only. Agora o poll (~10s) traz o conteúdo novo, respeitando rascunho local
+      // pendente e updated_at (nunca sobrescreve o que EU acabei de digitar).
       for (const note of fetched) {
-        if (byId.has(note.id)) continue // já carregada (própria ou via fetchNoteById)
+        const existing = byId.get(note.id)
+        if (existing) {
+          if (_pendingDraftIds.has(note.id)) continue
+          if (!tsNewer(note.updated_at, existing.updated_at)) continue
+          const merged = normalizeNote(note)
+          merged.is_shared_with_me = existing.is_shared_with_me
+          merged.shared_permission = existing.shared_permission
+          byId.set(note.id, merged)
+          changed = true
+          continue
+        }
         byId.set(note.id, normalizeNote(note))
         changed = true
       }
