@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useAuthStore } from './stores/auth-store'
 import { useNotesStore } from './stores/notes-store'
 import { useUpdateStore } from './stores/update-store'
-import { saveDraft, saveSession } from './lib/local-drafts'
+import { saveSession } from './lib/local-drafts'
 import Login from './pages/Login'
 import MainApp from './pages/MainApp'
 import UpdateBanner from './components/UpdateBanner'
@@ -23,28 +23,20 @@ export default function App() {
 
   useEffect(() => {
     window.electronAPI.onBeforeClose(async () => {
-      const { notes, openTabs, activeTabId, updateNote } = useNotesStore.getState()
       try {
-        // 1. Rede de segurança LOCAL primeiro (rápida, invisível, nunca perde):
-        //    grava a sessão (abas) e o rascunho de cada nota aberta.
+        // 1. Descarrega a ÚLTIMA edição do editor ATIVO (o debounce de 500ms pode não
+        //    ter rodado). O handler síncrono do Editor grava no store na hora + rascunho
+        //    local + sobe pra nuvem — com dirty-check, então uma nota que eu só ABRI e
+        //    não editei NÃO é re-enviada (senão sobrescreveria edição de outro com base velha).
+        window.dispatchEvent(new Event('force-save'))
+        const { openTabs, activeTabId } = useNotesStore.getState()
+        // 2. Sessão (abas) — rede de segurança local, invisível.
         await saveSession({ openTabs, activeTabId })
-        await Promise.all(
-          openTabs.map((id) => {
-            const note = notes.find((n) => n.id === id)
-            return note
-              ? saveDraft(note.id, { content: note.content, title: note.title, savedAt: note.updated_at })
-              : Promise.resolve()
-          }),
-        )
-        // 2. Depois tenta sincronizar com a nuvem (best-effort).
-        await Promise.all(
-          openTabs.map((id) => {
-            const note = notes.find((n) => n.id === id)
-            return note
-              ? updateNote(note.id, { content: note.content, title: note.title })
-              : Promise.resolve()
-          }),
-        )
+        // 3. Sobe SÓ as edições PENDENTES (rascunhos reais de notas editadas). NÃO
+        //    re-grava todas as abas às cegas — abas intocadas com base velha ficariam
+        //    sobrescrevendo o que outra pessoa editou (a causa do incidente da subnota).
+        //    O que não subir agora fica no rascunho e sobe no próximo login/foco.
+        await useNotesStore.getState().flushPendingDrafts()
       } catch (err) {
         console.error('[close] Falha ao salvar antes de fechar — fechando mesmo assim:', err)
       } finally {

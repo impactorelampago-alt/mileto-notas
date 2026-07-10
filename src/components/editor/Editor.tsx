@@ -62,6 +62,12 @@ export default function Editor() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const localContentRef = useRef<string>(activeNote?.content ?? '')
+  // Baseline SINCRONIZADA: o conteúdo que o editor considera "a versão persistida"
+  // (vinda do load/sync externo/nosso próprio save concluído). Os force-saves (troca de
+  // nota / unmount / evento / fechar) só re-enviam se localContentRef != este baseline —
+  // "sujo". Sem isto, só ABRIR uma nota (com base possivelmente velha) e sair já
+  // re-gravava a base por cima da edição de OUTRA pessoa (sobrescrita colaborativa).
+  const syncedContentRef = useRef<string>(activeNote?.content ?? '')
   const activeNoteIdRef = useRef<string | null>(null)
   activeNoteIdRef.current = activeNote?.id ?? null
   const prevNoteIdRef = useRef<string | null>(activeNote?.id ?? null)
@@ -75,7 +81,9 @@ export default function Editor() {
   // debounce de 500ms é cancelado na troca, senão o recém-digitado some.
   useEffect(() => {
     const prevId = prevNoteIdRef.current
-    if (prevId && prevId !== activeNote?.id) {
+    // Só persiste a nota anterior se ela foi REALMENTE editada (sujo). Re-enviar uma
+    // base intocada — que pode estar velha — sobrescreveria a edição de outra pessoa.
+    if (prevId && prevId !== activeNote?.id && localContentRef.current !== syncedContentRef.current) {
       const c = localContentRef.current
       const title = deriveTitle(c)
       const patch: { content: string; title?: string } = { content: c }
@@ -87,6 +95,7 @@ export default function Editor() {
     const content = activeNote?.content ?? ''
     setLocalContent(content)
     localContentRef.current = content
+    syncedContentRef.current = content // baseline sincronizada da nova nota
     setContextMenu(null)
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
   }, [activeNote?.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -100,12 +109,15 @@ export default function Editor() {
       setLocalContent(ext)
       localContentRef.current = ext
     }
+    // Conteúdo externo aceito = nova baseline sincronizada (não estou com edição pendente).
+    syncedContentRef.current = ext
   }, [activeNote?.content]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
       if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
       if (isReadOnlyRef.current) return
+      if (localContentRef.current === syncedContentRef.current) return // nada editado → não re-envia base
       const id = activeNoteIdRef.current
       const content = localContentRef.current
       if (id && content !== undefined) void useNotesStore.getState().updateNote(id, { content })
@@ -122,9 +134,13 @@ export default function Editor() {
     const handleForceSave = () => {
       if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
       if (isReadOnlyRef.current) return
+      if (localContentRef.current === syncedContentRef.current) return // nada editado → não re-envia base
       const id = activeNoteIdRef.current
       if (!id) return
-      void updateNote(id, { content: localContentRef.current })
+      const title = deriveTitle(localContentRef.current)
+      const patch: { content: string; title?: string } = { content: localContentRef.current }
+      if (title !== '') patch.title = title
+      void updateNote(id, patch)
     }
     const handleSelectAll = () => editorRef.current?.selectAll()
     window.addEventListener('force-save', handleForceSave)
@@ -152,6 +168,7 @@ export default function Editor() {
         const patch: { content: string; title?: string } = { content: newContent }
         if (nextTitle !== '' && cur?.title !== nextTitle) patch.title = nextTitle
         await updateNote(id, patch)
+        syncedContentRef.current = newContent // edição persistida (ou virou rascunho) → nova baseline
         void useNotesStore.getState().notifyMentions(id) // avisa @menções novas
         void useEditsStore.getState().recordNoteEdit(id) // registra "quem editou, quando"
         setSaveState('saved')
