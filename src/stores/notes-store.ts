@@ -248,7 +248,12 @@ async function notesDelete(table: string, id: string): Promise<{ count: number; 
   }
 }
 
-async function notesPatch(table: string, id: string, body: Record<string, unknown>): Promise<boolean> {
+async function notesPatch(
+  table: string,
+  id: string,
+  body: Record<string, unknown>,
+  opts?: { returnRow?: boolean },
+): Promise<boolean | Record<string, unknown>> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 5000)
 
@@ -264,6 +269,7 @@ async function notesPatch(table: string, id: string, body: Record<string, unknow
   }
 
   const token = _notesToken ?? SUPABASE_KEY
+  const wantRow = opts?.returnRow === true
 
   try {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
@@ -272,7 +278,8 @@ async function notesPatch(table: string, id: string, body: Record<string, unknow
         'apikey': SUPABASE_KEY,
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
+        // return=representation quando o chamador quer o updated_at do SERVIDOR (anti-skew).
+        'Prefer': wantRow ? 'return=representation' : 'return=minimal',
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -285,6 +292,10 @@ async function notesPatch(table: string, id: string, body: Record<string, unknow
     }
 
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (wantRow) {
+      const rows = await response.json().catch(() => null)
+      return Array.isArray(rows) && rows.length > 0 ? (rows[0] as Record<string, unknown>) : true
+    }
     return true
   } finally {
     clearTimeout(timeoutId)
@@ -1162,8 +1173,12 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // conexão voltar (flushPendingDrafts no evento `online`/foco). A nuvem continua
     // sendo a verdade: assim que o save passa, o rascunho é descartado.
     let cloudOk = true
+    let serverUpdatedAt: string | null = null
     try {
-      await notesPatch('notes', id, updates)
+      const res = await notesPatch('notes', id, updates, { returnRow: true })
+      if (res && typeof res === 'object' && typeof (res as Record<string, unknown>).updated_at === 'string') {
+        serverUpdatedAt = (res as Record<string, unknown>).updated_at as string
+      }
     } catch (err) {
       cloudOk = false
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -1171,6 +1186,16 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     }
 
     if (!cloudOk) { void get().refreshPendingSync(); return } // rascunho pendente; sobe depois.
+
+    // Adota o updated_at do SERVIDOR (relógio único). O optimistic set acima usou o
+    // relógio do CLIENTE; os guards de anti-sobrescrita (tsNewer no realtime/poll/sync da
+    // task) comparam contra o updated_at server-clock das outras notas — com skew de
+    // relógio isso fazia um remoto GENUÍNO parecer "mais velho" (edição sumia/piscava) ou
+    // o inverso. Reconciliando com o server, a comparação vira server-vs-server (sem skew).
+    if (serverUpdatedAt) {
+      const srv = serverUpdatedAt
+      set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, updated_at: srv } : n)) }))
+    }
 
     // Save na nuvem da NOTA confirmado: descartamos o rascunho/pending SÓ quando
     // NADA ficou por sincronizar. O patch é PARCIAL e o rascunho guarda os dois

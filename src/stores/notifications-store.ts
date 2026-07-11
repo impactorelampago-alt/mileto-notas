@@ -150,7 +150,19 @@ export const useNotificationsStore = create<NotificationsState>()((set, get) => 
       return
     }
 
-    // task_completed: abre a nota concluída (por task_id) se estiver carregada.
+    // note_created: nova nota em categoria compartilhada. Abre por note_id (fetch se não
+    // carregada) — deep-link confiável agora que o trigger dispara no INSERT da nota.
+    if (n.type === 'note_created' && n.note_id) {
+      let note = notesStore.notes.find((x) => x.id === n.note_id)
+      if (!note) note = (await notesStore.fetchNoteById(n.note_id)) ?? undefined
+      if (!note) return
+      goToSectionForTask(note.task_id ?? n.task_id)
+      notesStore.openTab(note.id)
+      notesStore.setActiveTab(note.id)
+      return
+    }
+
+    // task_completed (e note_created antigo sem note_id): abre por task_id se carregada.
     if (!n.task_id) return
     const note = notesStore.notes.find((x) => x.task_id === n.task_id)
     if (!note) return
