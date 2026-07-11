@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useAuthStore } from './stores/auth-store'
 import { useNotesStore } from './stores/notes-store'
+import { useCollabStore } from './stores/collab-store'
 import { useUpdateStore } from './stores/update-store'
 import { saveSession } from './lib/local-drafts'
 import Login from './pages/Login'
@@ -29,6 +30,8 @@ export default function App() {
         //    local + sobe pra nuvem — com dirty-check, então uma nota que eu só ABRI e
         //    não editei NÃO é re-enviada (senão sobrescreveria edição de outro com base velha).
         window.dispatchEvent(new Event('force-save'))
+        // Co-edição: flush do snapshot CRDT pendente (ytext → notes.content + note_yjs).
+        try { useCollabStore.getState().close() } catch { /* noop */ }
         const { openTabs, activeTabId } = useNotesStore.getState()
         // 2. Sessão (abas) — rede de segurança local, invisível.
         await saveSession({ openTabs, activeTabId })

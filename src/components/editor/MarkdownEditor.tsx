@@ -13,6 +13,9 @@ import {
   editorTheme, mdHighlight, livePreview, listKeymap, tabKeymap, applyFormat as doFormat, type FormatKind,
 } from './markdown-cm'
 import { mentionCompletionSource, mentionHighlight, flashField, flashLineEffect, tokenDeleteKeymap } from './mentions'
+import { yCollab } from 'y-codemirror.next'
+import type * as Y from 'yjs'
+import type { Awareness } from 'y-protocols/awareness'
 
 export interface MarkdownEditorHandle {
   applyFormat: (kind: FormatKind) => void
@@ -37,10 +40,17 @@ interface Props {
   wordWrap: boolean
   fontSize: number
   placeholder?: string
-  /** Cursores/seleções de OUTRAS pessoas na mesma nota (presença colaborativa). */
+  /** Cursores/seleções de OUTRAS pessoas na mesma nota (presença colaborativa — Fase 1). */
   remoteCursors?: RemoteCursor[]
   /** Seleção local mudou (anchor/head no doc) — pra transmitir a presença. */
   onSelect?: (anchor: number, head: number) => void
+  /** CO-EDIÇÃO (Fase 2): Y.Text ligado ao doc via yCollab (merge CRDT). Se presente, o
+   *  Yjs é a fonte do documento (sem value/value-sync). Ausente → modo simples. */
+  ytext?: Y.Text
+  awareness?: Awareness
+  /** Muda quando a sessão colaborativa da nota muda → recria a view (yCollab é fixado
+   *  na criação). `undefined` no modo simples = view persiste (comportamento atual). */
+  collabKey?: string
 }
 
 // Marca transações que vêm de fora (sync do value) pra NÃO disparar onChange e não
@@ -194,9 +204,8 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       { key: 'Mod-i', run: (v: EditorView) => { doFormat(v, 'italic'); return true } },
       { key: 'Mod-u', run: (v: EditorView) => { doFormat(v, 'underline'); return true } },
     ]
-    const state = EditorState.create({
-      doc: propsRef.current.value,
-      extensions: [
+    const collab = propsRef.current.ytext
+    const baseExtensions = [
         lnC.current.of(propsRef.current.showLineNumbers ? lineNumbers() : []),
         history(),
         drawSelection(),
@@ -285,19 +294,37 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
             return true
           },
         }),
-      ],
+    ]
+    // yCollab liga o doc ao CRDT (merge automático + cursores por awareness). Só no modo
+    // colaborativo; a view é recriada quando a sessão muda (dep collabKey). FALLBACK: se o
+    // yCollab falhar ao iniciar, cria a view SIMPLES → a edição nunca quebra.
+    const mkState = (useCollab: boolean) => EditorState.create({
+      doc: useCollab && collab ? collab.toString() : propsRef.current.value,
+      extensions: useCollab && collab
+        ? [yCollab(collab, propsRef.current.awareness ?? null), ...baseExtensions]
+        : baseExtensions,
     })
-    const view = new EditorView({ state, parent: parent.current })
+    let view: EditorView
+    try {
+      view = new EditorView({ state: mkState(!!collab), parent: parent.current })
+    } catch (err) {
+      console.error('[collab] yCollab init falhou — editor simples:', err)
+      view = new EditorView({ state: mkState(false), parent: parent.current })
+    }
     viewRef.current = view
     return () => {
       if (linkTimer.current) clearTimeout(linkTimer.current)
       view.destroy(); viewRef.current = null
     }
+    // Recria a view quando a sessão colaborativa muda (entra/sai do colab, ou troca de
+    // nota no colab). No modo simples collabKey é undefined → cria uma vez só.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [props.collabKey])
 
   // Sincroniza value externo (troca de nota / realtime / sync do Ops) → doc.
+  // NO COLAB isto NÃO roda: o Yjs é a fonte do documento (o value é ignorado).
   useEffect(() => {
+    if (propsRef.current.ytext) return
     const view = viewRef.current
     if (!view) return
     const cur = view.state.doc.toString()

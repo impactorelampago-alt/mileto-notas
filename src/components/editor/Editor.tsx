@@ -16,6 +16,7 @@ import SubnoteTree from './SubnoteTree'
 import MarkdownEditor, { type MarkdownEditorHandle } from './MarkdownEditor'
 import type { FormatKind } from './markdown-cm'
 import { usePresenceStore } from '../../stores/presence-store'
+import { useCollabStore } from '../../stores/collab-store'
 
 // Título = 1ª linha não-vazia, limpa dos marcadores markdown (fica bonito na aba e
 // na task do Ops, que mostra tasks.title).
@@ -57,6 +58,7 @@ export default function Editor() {
   const joinPresence = usePresenceStore((s) => s.join)
   const leavePresence = usePresenceStore((s) => s.leave)
   const setPresenceCursor = usePresenceStore((s) => s.setLocalCursor)
+  const collabSession = useCollabStore((s) => s.session)
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
   const [mentionNoAccess, setMentionNoAccess] = useState<{ noteId: string; names: string[] } | null>(null)
@@ -80,6 +82,11 @@ export default function Editor() {
 
   // Posso EDITAR? (própria/DONO/compartilhada-EDIT/cargo). "Todos" é só-leitura exceto DONO.
   const isReadOnly = !isDono && (viewAll || (!!activeNote && !canEditNote(activeNote)))
+  // CO-EDIÇÃO ativa nesta nota? (sessão CRDT pronta pra a nota ativa e eu posso editar).
+  // Se a sessão não abrir (rede/RLS), collabOn=false → modo simples (edição nunca quebra).
+  const collabOn = !!activeNote && !isReadOnly && collabSession?.noteId === activeNote.id
+  const collabOnRef = useRef(collabOn)
+  collabOnRef.current = collabOn
   const isReadOnlyRef = useRef(isReadOnly)
   isReadOnlyRef.current = isReadOnly
 
@@ -161,6 +168,9 @@ export default function Editor() {
   const handleContentChange = useCallback(
     (newContent: string) => {
       if (isReadOnly) return
+      // CO-EDIÇÃO: o Yjs é a fonte e o collab-store salva o snapshot (ytext → notes.content).
+      // Aqui NÃO disparamos updateNote (evita save duplo/conflito com o CRDT).
+      if (collabOnRef.current) return
       setLocalContent(newContent)
       localContentRef.current = newContent
       setSaveState('saving')
@@ -196,10 +206,32 @@ export default function Editor() {
   )
   useEffect(() => {
     const id = activeNote?.id
-    if (!id || !meId || !myName) return
+    // No modo CO-EDIÇÃO os cursores vêm do awareness do Yjs (yCollab) → não usa a
+    // presença Fase 1 (evita cursor duplicado). Presença Fase 1 fica só no fallback.
+    if (!id || !meId || !myName || collabOn) { leavePresence(); return }
     joinPresence(id, { id: meId, name: myName })
     return () => leavePresence()
-  }, [activeNote?.id, meId, myName, joinPresence, leavePresence])
+  }, [activeNote?.id, meId, myName, collabOn, joinPresence, leavePresence])
+
+  // CO-EDIÇÃO (Fase 2): abre a sessão CRDT da nota ativa quando eu POSSO editar. O
+  // collab-store carrega/semeia o Y.Doc, sincroniza ao vivo e chama onSnapshot (ytext →
+  // notes.content) pra persistir + manter o Ops. Só-leitura / sem nome → não abre (fallback).
+  useEffect(() => {
+    const id = activeNote?.id
+    const store = useCollabStore.getState()
+    if (!id || isReadOnly || !meId || !myName) { store.close(); return }
+    const seed = activeNote?.content ?? ''
+    void store.open(id, seed, { id: meId, name: myName }, (noteId, markdown) => {
+      const title = deriveTitle(markdown)
+      const patch: { content: string; title?: string } = { content: markdown }
+      if (title !== '') patch.title = title
+      void useNotesStore.getState().updateNote(noteId, patch)
+      void useNotesStore.getState().notifyMentions(noteId)
+      void useEditsStore.getState().recordNoteEdit(noteId)
+    })
+    return () => store.close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNote?.id, isReadOnly, meId, myName])
 
   const onPasteImage = useCallback(
     (files: File[]) => {
@@ -278,7 +310,7 @@ export default function Editor() {
 
       <div className="relative flex flex-1 overflow-hidden">
         {subnoteSide === 'left' && <SubnoteTree />}
-        {peerList.length > 0 && (
+        {!collabOn && peerList.length > 0 && (
           <div className="pointer-events-none absolute z-10 flex items-center gap-1" style={{ top: 8, right: 14 }}>
             {peerList.map((p) => (
               <span
@@ -301,8 +333,11 @@ export default function Editor() {
           value={localContent}
           onChange={handleContentChange}
           onCursor={onCursor}
-          onSelect={onSelect}
-          remoteCursors={remoteCursors}
+          onSelect={collabOn ? undefined : onSelect}
+          remoteCursors={collabOn ? [] : remoteCursors}
+          ytext={collabOn ? collabSession?.ytext : undefined}
+          awareness={collabOn ? collabSession?.awareness : undefined}
+          collabKey={collabOn && activeNote ? activeNote.id : undefined}
           onPasteImage={onPasteImage}
           onContextMenu={(info) => { if (isReadOnly && !info.hasSelection) return; setContextMenu(info) }}
           readOnly={isReadOnly}

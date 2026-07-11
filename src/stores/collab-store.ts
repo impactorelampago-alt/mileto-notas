@@ -168,11 +168,12 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
 
     // 3) Propaga updates locais + agenda persistência/snapshot.
     const updateHandler = (update: Uint8Array, origin: unknown) => {
-      if (origin !== 'remote' && origin !== 'load') {
-        void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(update) } })
-      }
-      // Persiste o estado + snapshot markdown (debounced) — de qualquer origem, pois o
-      // doc já convergiu; salvar o estado idêntico é idempotente.
+      // Updates de OUTROS (remote) ou do carregamento (load) não re-transmitem nem
+      // re-persistem — quem EDITOU localmente é que propaga e salva (evita N clientes
+      // gravando o mesmo estado a cada ciclo).
+      if (origin === 'remote' || origin === 'load') return
+      void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(update) } })
+      // Persiste o estado (note_yjs) + snapshot markdown (notes.content) com debounce.
       if (_i.persistTimer) clearTimeout(_i.persistTimer)
       _i.persistTimer = setTimeout(() => {
         _i.persistTimer = null
@@ -202,6 +203,15 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
   },
 
   close: () => {
+    // Flush FINAL do snapshot/persistência pendente ANTES de destruir — não perde a
+    // última edição ao trocar de nota / fechar.
+    const s = _i.session
+    const snap = _i.onSnapshot
+    if (_i.persistTimer) { clearTimeout(_i.persistTimer); _i.persistTimer = null }
+    if (s) {
+      void persistState(s.noteId, s.doc)
+      snap?.(s.noteId, s.ytext.toString())
+    }
     teardown()
     set({ session: null, loading: false })
   },
