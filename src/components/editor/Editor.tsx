@@ -59,6 +59,7 @@ export default function Editor() {
   const leavePresence = usePresenceStore((s) => s.leave)
   const setPresenceCursor = usePresenceStore((s) => s.setLocalCursor)
   const collabSession = useCollabStore((s) => s.session)
+  const collabPeers = useCollabStore((s) => s.collabPeers)
 
   const [localContent, setLocalContent] = useState(() => activeNote?.content ?? '')
   const [mentionNoAccess, setMentionNoAccess] = useState<{ noteId: string; names: string[] } | null>(null)
@@ -82,9 +83,10 @@ export default function Editor() {
 
   // Posso EDITAR? (própria/DONO/compartilhada-EDIT/cargo). "Todos" é só-leitura exceto DONO.
   const isReadOnly = !isDono && (viewAll || (!!activeNote && !canEditNote(activeNote)))
-  // CO-EDIÇÃO ativa nesta nota? (sessão CRDT pronta pra a nota ativa e eu posso editar).
-  // Se a sessão não abrir (rede/RLS), collabOn=false → modo simples (edição nunca quebra).
-  const collabOn = !!activeNote && !isReadOnly && collabSession?.noteId === activeNote.id
+  // CO-EDIÇÃO ativa nesta nota? (sessão CRDT pronta pra a nota ativa — editor OU viewer
+  // só-leitura vendo ao vivo). Se a sessão não abrir (rede/RLS/sem estado), collabOn=false
+  // → modo simples (mostra notes.content; a edição nunca quebra).
+  const collabOn = !!activeNote && collabSession?.noteId === activeNote.id
   const collabOnRef = useRef(collabOn)
   collabOnRef.current = collabOn
   const isReadOnlyRef = useRef(isReadOnly)
@@ -204,6 +206,14 @@ export default function Editor() {
     () => peerList.map((p) => ({ userId: p.userId, name: p.name, color: p.color, anchor: p.anchor, head: p.head })),
     [peerList],
   )
+  // Barra "quem está aqui": no CO-EDIÇÃO vem do awareness do Yjs (collabPeers); no
+  // fallback, da presença Fase 1 (peers).
+  const barPeers = useMemo(
+    () => collabOn
+      ? collabPeers.map((p) => ({ key: 'c' + p.clientId, name: p.name, color: p.color }))
+      : peerList.map((p) => ({ key: p.userId, name: p.name, color: p.color })),
+    [collabOn, collabPeers, peerList],
+  )
   useEffect(() => {
     const id = activeNote?.id
     // No modo CO-EDIÇÃO os cursores vêm do awareness do Yjs (yCollab) → não usa a
@@ -219,7 +229,9 @@ export default function Editor() {
   useEffect(() => {
     const id = activeNote?.id
     const store = useCollabStore.getState()
-    if (!id || isReadOnly || !meId || !myName) { store.close(); return }
+    if (!id || !meId || !myName) { store.close(); return }
+    // Abre pra QUEM VÊ (editor ou só-leitura). editable=false: viewer só recebe ao vivo,
+    // não semeia nem persiste; se não houver estado CRDT ainda, a sessão não abre (simples).
     const seed = activeNote?.content ?? ''
     void store.open(id, seed, { id: meId, name: myName }, (noteId, markdown) => {
       const title = deriveTitle(markdown)
@@ -228,7 +240,7 @@ export default function Editor() {
       void useNotesStore.getState().updateNote(noteId, patch)
       void useNotesStore.getState().notifyMentions(noteId)
       void useEditsStore.getState().recordNoteEdit(noteId)
-    })
+    }, !isReadOnly)
     return () => store.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNote?.id, isReadOnly, meId, myName])
@@ -310,11 +322,11 @@ export default function Editor() {
 
       <div className="relative flex flex-1 overflow-hidden">
         {subnoteSide === 'left' && <SubnoteTree />}
-        {!collabOn && peerList.length > 0 && (
+        {barPeers.length > 0 && (
           <div className="pointer-events-none absolute z-10 flex items-center gap-1" style={{ top: 8, right: 14 }}>
-            {peerList.map((p) => (
+            {barPeers.map((p) => (
               <span
-                key={p.userId}
+                key={p.key}
                 title={`${p.name} está editando`}
                 className="flex items-center gap-1 rounded-full"
                 style={{
@@ -337,6 +349,7 @@ export default function Editor() {
           remoteCursors={collabOn ? [] : remoteCursors}
           ytext={collabOn ? collabSession?.ytext : undefined}
           awareness={collabOn ? collabSession?.awareness : undefined}
+          undoManager={collabOn ? collabSession?.undoManager : undefined}
           collabKey={collabOn && activeNote ? activeNote.id : undefined}
           onPasteImage={onPasteImage}
           onContextMenu={(info) => { if (isReadOnly && !info.hasSelection) return; setContextMenu(info) }}

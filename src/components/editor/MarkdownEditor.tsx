@@ -3,7 +3,7 @@ import {
   EditorView, keymap, lineNumbers, drawSelection, placeholder as cmPlaceholder,
   Decoration, WidgetType, type DecorationSet,
 } from '@codemirror/view'
-import { EditorState, Compartment, Annotation, StateField, StateEffect } from '@codemirror/state'
+import { EditorState, Compartment, Annotation, StateField, StateEffect, Prec } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
@@ -13,7 +13,7 @@ import {
   editorTheme, mdHighlight, livePreview, listKeymap, tabKeymap, applyFormat as doFormat, type FormatKind,
 } from './markdown-cm'
 import { mentionCompletionSource, mentionHighlight, flashField, flashLineEffect, tokenDeleteKeymap } from './mentions'
-import { yCollab } from 'y-codemirror.next'
+import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import type * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 
@@ -48,6 +48,7 @@ interface Props {
    *  Yjs é a fonte do documento (sem value/value-sync). Ausente → modo simples. */
   ytext?: Y.Text
   awareness?: Awareness
+  undoManager?: Y.UndoManager
   /** Muda quando a sessão colaborativa da nota muda → recria a view (yCollab é fixado
    *  na criação). `undefined` no modo simples = view persiste (comportamento atual). */
   collabKey?: string
@@ -301,7 +302,13 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     const mkState = (useCollab: boolean) => EditorState.create({
       doc: useCollab && collab ? collab.toString() : propsRef.current.value,
       extensions: useCollab && collab
-        ? [yCollab(collab, propsRef.current.awareness ?? null), ...baseExtensions]
+        ? [
+            yCollab(collab, propsRef.current.awareness ?? null, { undoManager: propsRef.current.undoManager ?? false }),
+            // Ctrl+Z/Ctrl+Y → undo/redo do Yjs (só as MINHAS edições), com precedência
+            // ALTA pra ganhar do history() do CodeMirror (que fica inerte no colab).
+            Prec.highest(keymap.of(yUndoManagerKeymap)),
+            ...baseExtensions,
+          ]
         : baseExtensions,
     })
     let view: EditorView

@@ -40,7 +40,11 @@ export interface CollabSession {
   doc: Y.Doc
   ytext: Y.Text
   awareness: Awareness
+  undoManager: Y.UndoManager
 }
+
+/** Quem está com a nota aberta AGORA (via awareness), sem eu mesmo. */
+export interface CollabPeer { clientId: number; name: string; color: string }
 
 const PERSIST_MS = 2500 // debounce da gravação do estado no note_yjs + snapshot markdown
 
@@ -51,17 +55,23 @@ interface Internal {
   onSnapshot: ((noteId: string, markdown: string) => void) | null
   updateHandler: ((update: Uint8Array, origin: unknown) => void) | null
   awarenessHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void) | null
+  peersHandler: (() => void) | null
+  peersKey: string
+  editable: boolean
 }
 
 interface CollabState {
   session: CollabSession | null
+  collabPeers: CollabPeer[]
   loading: boolean
-  /** Abre (ou reusa) a sessão CRDT da nota. `seed` = markdown atual (pra 1ª vez). */
-  open: (noteId: string, seed: string, me: { id: string; name: string }, onSnapshot: (noteId: string, markdown: string) => void) => Promise<void>
+  /** Abre (ou reusa) a sessão CRDT da nota. `seed` = markdown atual (pra 1ª vez).
+   *  `editable=false` (viewer só-leitura): só RECEBE ao vivo — não semeia, não persiste;
+   *  se ainda não existe estado CRDT, NÃO abre (o front cai no modo simples/notes.content). */
+  open: (noteId: string, seed: string, me: { id: string; name: string }, onSnapshot: (noteId: string, markdown: string) => void, editable: boolean) => Promise<void>
   close: () => void
 }
 
-const _i: Internal = { session: null, channel: null, persistTimer: null, onSnapshot: null, updateHandler: null, awarenessHandler: null }
+const _i: Internal = { session: null, channel: null, persistTimer: null, onSnapshot: null, updateHandler: null, awarenessHandler: null, peersHandler: null, peersKey: '', editable: true }
 
 async function loadState(noteId: string): Promise<Uint8Array | null> {
   const { data, error } = await supabase.from('note_yjs').select('state').eq('note_id', noteId).maybeSingle()
@@ -83,7 +93,9 @@ function teardown() {
   if (s) {
     if (_i.updateHandler) s.doc.off('update', _i.updateHandler)
     if (_i.awarenessHandler) s.awareness.off('update', _i.awarenessHandler)
+    if (_i.peersHandler) s.awareness.off('change', _i.peersHandler)
     try { removeAwarenessStates(s.awareness, [s.doc.clientID], 'local') } catch { /* noop */ }
+    s.undoManager.destroy()
     s.awareness.destroy()
     s.doc.destroy()
   }
@@ -92,22 +104,29 @@ function teardown() {
   _i.channel = null
   _i.updateHandler = null
   _i.awarenessHandler = null
+  _i.peersHandler = null
+  _i.peersKey = ''
   _i.onSnapshot = null
 }
 
 export const useCollabStore = create<CollabState>()((set, get) => ({
   session: null,
+  collabPeers: [],
   loading: false,
 
-  open: async (noteId, seed, me, onSnapshot) => {
+  open: async (noteId, seed, me, onSnapshot, editable) => {
     if (get().session?.noteId === noteId) return // já aberta pra esta nota
     teardown()
-    set({ session: null, loading: true })
+    _i.editable = editable
+    set({ session: null, collabPeers: [], loading: true })
 
     const doc = new Y.Doc()
     const ytext = doc.getText('content')
     const awareness = new Awareness(doc)
     awareness.setLocalStateField('user', { name: me.name, color: colorForUser(me.id) })
+    // Undo colaborativo: desfaz só as MINHAS edições (não as dos outros). trackedOrigins
+    // default cobre as transações locais do yCollab.
+    const undoManager = new Y.UndoManager(ytext)
 
     // 1) Carrega o estado canônico (ou semeia a partir do markdown na 1ª vez).
     let persisted: Uint8Array | null = null
@@ -115,6 +134,12 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       persisted = await loadState(noteId)
       if (persisted) {
         Y.applyUpdate(doc, persisted, 'load')
+      } else if (!editable) {
+        // Viewer só-leitura e ainda NÃO existe estado CRDT (ninguém co-editou) → não
+        // semeia (a RLS bloqueia o insert) e NÃO abre sessão: o front mostra notes.content.
+        undoManager.destroy(); awareness.destroy(); doc.destroy()
+        set({ session: null, collabPeers: [], loading: false })
+        return
       } else {
         // Semeia num doc TEMP e insere como estado inicial (ON CONFLICT DO NOTHING via
         // upsert ignoreDuplicates); depois RE-LÊ o canônico e aplica no doc VAZIO — assim,
@@ -131,8 +156,8 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       }
     } catch (e) {
       console.warn('[collab] open/load falhou — modo simples:', e)
-      awareness.destroy(); doc.destroy()
-      set({ session: null, loading: false })
+      undoManager.destroy(); awareness.destroy(); doc.destroy()
+      set({ session: null, collabPeers: [], loading: false })
       return
     }
 
@@ -194,12 +219,31 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     }
     awareness.on('update', awarenessHandler)
 
-    _i.session = { noteId, doc, ytext, awareness }
+    // Barra "quem está aqui": lista de peers do awareness (nome/cor), sem eu mesmo, só
+    // atualizando o store quando o CONJUNTO muda (não a cada movimento de cursor).
+    const refreshPeers = () => {
+      const list: CollabPeer[] = []
+      awareness.getStates().forEach((st, clientId) => {
+        if (clientId === doc.clientID) return
+        const u = (st as { user?: { name?: string; color?: string } }).user
+        if (u?.name) list.push({ clientId, name: u.name, color: u.color ?? '#888' })
+      })
+      list.sort((a, b) => a.clientId - b.clientId)
+      const key = list.map((p) => p.clientId + ':' + p.name + ':' + p.color).join('|')
+      if (key === _i.peersKey) return
+      _i.peersKey = key
+      set({ collabPeers: list })
+    }
+    awareness.on('change', refreshPeers)
+
+    _i.session = { noteId, doc, ytext, awareness, undoManager }
     _i.channel = channel
     _i.updateHandler = updateHandler
     _i.awarenessHandler = awarenessHandler
+    _i.peersHandler = refreshPeers
     _i.onSnapshot = onSnapshot
     set({ session: _i.session, loading: false })
+    refreshPeers()
   },
 
   close: () => {
@@ -207,12 +251,13 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     // última edição ao trocar de nota / fechar.
     const s = _i.session
     const snap = _i.onSnapshot
+    const editable = _i.editable
     if (_i.persistTimer) { clearTimeout(_i.persistTimer); _i.persistTimer = null }
-    if (s) {
+    if (s && editable) { // viewer só-leitura não persiste (RLS bloquearia + não editou)
       void persistState(s.noteId, s.doc)
       snap?.(s.noteId, s.ytext.toString())
     }
     teardown()
-    set({ session: null, loading: false })
+    set({ session: null, collabPeers: [], loading: false })
   },
 }))
