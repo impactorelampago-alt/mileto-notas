@@ -84,12 +84,35 @@ function collectNoteTreeIds(notes: Note[], rootId: string): Set<string> {
  */
 function inheritSubnoteSharedFlags(notes: Note[]): void {
   const byId = new Map(notes.map((n) => [n.id, n]))
+  const authState = useAuthStore.getState()
+  const userId = authState.getEffectiveUserId()
+  const sharedCatPerm = useSharingStore.getState().sharedWithMeCategories // { key: 'EDIT'|'VIEW' }
+  const taskStatusById = new Map(useOpsStore.getState().tasks.map((t) => [t.id, t.status]))
+  const myPrefix = userId ? 'USR_' + userId.replace(/-/g, '') + '_' : null
+
   for (const n of notes) {
     if (!n.parent_note_id) continue
     const root = byId.get(n.parent_note_id)
-    if (root?.is_shared_with_me) {
+    if (!root) continue
+    // (1) raiz explicitamente compartilhada COMIGO (note_share/categoria, criada por outro)
+    //     → a subnota herda a MESMA permissão da raiz.
+    if (root.is_shared_with_me) {
       n.is_shared_with_me = true
       n.shared_permission = root.shared_permission
+      continue
+    }
+    // (2) subnota criada por OUTRO sob uma raiz numa categoria que EU compartilho/possuo —
+    //     INCLUSIVE quando a raiz é a MINHA PRÓPRIA nota (aí root.is_shared_with_me é false,
+    //     mas eu posso editar as subnotas que outros criaram nela). Espelha o back-end:
+    //     user_can_edit_note(subnota) → notas_category_shared_with_me/owns_category_key da raiz.
+    if (!userId || n.creator_id === userId) continue // minha subnota: já editável por criador
+    const rootStatus = root.task_id ? taskStatusById.get(root.task_id) : undefined
+    if (!rootStatus) continue
+    const perm = sharedCatPerm[rootStatus]
+      ?? (myPrefix && rootStatus.startsWith(myPrefix) ? 'EDIT' : undefined)
+    if (perm) {
+      n.is_shared_with_me = true
+      n.shared_permission = perm
     }
   }
 }
