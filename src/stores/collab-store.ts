@@ -51,13 +51,15 @@ const PERSIST_MS = 2500 // debounce da gravação do estado no note_yjs + snapsh
 interface Internal {
   session: CollabSession | null
   channel: RealtimeChannel | null
-  persistTimer: ReturnType<typeof setTimeout> | null
   onSnapshot: ((noteId: string, markdown: string) => void) | null
   updateHandler: ((update: Uint8Array, origin: unknown) => void) | null
   awarenessHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void) | null
   peersHandler: (() => void) | null
   peersKey: string
   editable: boolean
+  dirty: boolean // há mudança (minha ou de outro) ainda não persistida
+  persistTicker: ReturnType<typeof setInterval> | null // grava o estado (só o cliente ELEITO)
+  heartbeat: ReturnType<typeof setInterval> | null // refresca minha awareness + GC de peers obsoletos
 }
 
 interface CollabState {
@@ -71,7 +73,10 @@ interface CollabState {
   close: () => void
 }
 
-const _i: Internal = { session: null, channel: null, persistTimer: null, onSnapshot: null, updateHandler: null, awarenessHandler: null, peersHandler: null, peersKey: '', editable: true }
+const HEARTBEAT_MS = 15000
+const AWARENESS_TIMEOUT_MS = 32000 // peer sem refrescar por > isto = obsoleto (fechou/dormiu)
+
+const _i: Internal = { session: null, channel: null, onSnapshot: null, updateHandler: null, awarenessHandler: null, peersHandler: null, peersKey: '', editable: true, dirty: false, persistTicker: null, heartbeat: null }
 
 async function loadState(noteId: string): Promise<Uint8Array | null> {
   const { data, error } = await supabase.from('note_yjs').select('state').eq('note_id', noteId).maybeSingle()
@@ -88,7 +93,8 @@ async function persistState(noteId: string, doc: Y.Doc): Promise<void> {
 }
 
 function teardown() {
-  if (_i.persistTimer) { clearTimeout(_i.persistTimer); _i.persistTimer = null }
+  if (_i.persistTicker) { clearInterval(_i.persistTicker); _i.persistTicker = null }
+  if (_i.heartbeat) { clearInterval(_i.heartbeat); _i.heartbeat = null }
   const s = _i.session
   if (s) {
     if (_i.updateHandler) s.doc.off('update', _i.updateHandler)
@@ -107,6 +113,7 @@ function teardown() {
   _i.peersHandler = null
   _i.peersKey = ''
   _i.onSnapshot = null
+  _i.dirty = false
 }
 
 export const useCollabStore = create<CollabState>()((set, get) => ({
@@ -123,7 +130,8 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     const doc = new Y.Doc()
     const ytext = doc.getText('content')
     const awareness = new Awareness(doc)
-    awareness.setLocalStateField('user', { name: me.name, color: colorForUser(me.id) })
+    // `editable` entra no estado pra a ELEIÇÃO do cliente que persiste (viewers não gravam).
+    awareness.setLocalStateField('user', { name: me.name, color: colorForUser(me.id), editable })
     // Undo colaborativo: desfaz só as MINHAS edições (não as dos outros). trackedOrigins
     // default cobre as transações locais do yCollab.
     const undoManager = new Y.UndoManager(ytext)
@@ -193,18 +201,15 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
 
     // 3) Propaga updates locais + agenda persistência/snapshot.
     const updateHandler = (update: Uint8Array, origin: unknown) => {
-      // Updates de OUTROS (remote) ou do carregamento (load) não re-transmitem nem
-      // re-persistem — quem EDITOU localmente é que propaga e salva (evita N clientes
-      // gravando o mesmo estado a cada ciclo).
-      if (origin === 'remote' || origin === 'load') return
-      void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(update) } })
-      // Persiste o estado (note_yjs) + snapshot markdown (notes.content) com debounce.
-      if (_i.persistTimer) clearTimeout(_i.persistTimer)
-      _i.persistTimer = setTimeout(() => {
-        _i.persistTimer = null
-        void persistState(noteId, doc)
-        _i.onSnapshot?.(noteId, ytext.toString())
-      }, PERSIST_MS)
+      if (origin === 'load') return
+      // Só re-transmito o que EU editei (origin local). Update de outro (remote) já veio
+      // do canal — não reenvia (evita eco).
+      if (origin !== 'remote') {
+        void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(update) } })
+      }
+      // Qualquer edição (minha OU de outro) deixa o doc "sujo" → o cliente ELEITO grava
+      // no próximo tick. Assim o note_yjs/notes.content fica em dia com UM só gravador.
+      _i.dirty = true
     }
     doc.on('update', updateHandler)
 
@@ -236,12 +241,45 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     }
     awareness.on('change', refreshPeers)
 
+    // Persistência por 1 cliente ELEITO (menor clientID entre os EDITORES presentes) —
+    // grava estado + snapshot só se houver mudança pendente. Evita N clientes gravando o
+    // mesmo. Se o eleito sair, o próximo menor assume no tick seguinte.
+    const persistTick = () => {
+      if (!_i.dirty || !editable) return
+      let leader = doc.clientID
+      awareness.getStates().forEach((st, cid) => {
+        const u = (st as { user?: { editable?: boolean } }).user
+        if (u?.editable && cid < leader) leader = cid
+      })
+      if (leader !== doc.clientID) return // outro cliente (menor id) é o gravador
+      _i.dirty = false
+      void persistState(noteId, doc)
+      _i.onSnapshot?.(noteId, ytext.toString())
+    }
+    const persistTicker = setInterval(persistTick, PERSIST_MS)
+
+    // Heartbeat: refresca minha awareness (pra eu não virar "obsoleto") e remove peers que
+    // pararam de refrescar (fecharam/dormiram sem sair) → mata cursor-fantasma pós-sleep.
+    const heartbeat = setInterval(() => {
+      const st = awareness.getLocalState()
+      if (st) awareness.setLocalState(st)
+      const now = Date.now()
+      const stale: number[] = []
+      awareness.meta.forEach((m, cid) => {
+        if (cid !== doc.clientID && now - m.lastUpdated > AWARENESS_TIMEOUT_MS) stale.push(cid)
+      })
+      if (stale.length) removeAwarenessStates(awareness, stale, 'timeout')
+    }, HEARTBEAT_MS)
+
     _i.session = { noteId, doc, ytext, awareness, undoManager }
     _i.channel = channel
     _i.updateHandler = updateHandler
     _i.awarenessHandler = awarenessHandler
     _i.peersHandler = refreshPeers
+    _i.persistTicker = persistTicker
+    _i.heartbeat = heartbeat
     _i.onSnapshot = onSnapshot
+    _i.dirty = false
     set({ session: _i.session, loading: false })
     refreshPeers()
   },
@@ -252,8 +290,10 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     const s = _i.session
     const snap = _i.onSnapshot
     const editable = _i.editable
-    if (_i.persistTimer) { clearTimeout(_i.persistTimer); _i.persistTimer = null }
-    if (s && editable) { // viewer só-leitura não persiste (RLS bloquearia + não editou)
+    const dirty = _i.dirty
+    // Flush FINAL ao sair: se EU sou editor e há mudança pendente, gravo (independe da
+    // eleição — o último a sair garante o save). Viewer só-leitura nunca persiste.
+    if (s && editable && dirty) {
       void persistState(s.noteId, s.doc)
       snap?.(s.noteId, s.ytext.toString())
     }
