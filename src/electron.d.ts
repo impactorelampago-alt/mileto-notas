@@ -20,6 +20,9 @@ declare global {
       app: {
         getVersion: () => Promise<string>
       }
+      power: {
+        onResume: (callback: () => void) => void
+      }
       updates: {
         install: () => void
         check: () => void

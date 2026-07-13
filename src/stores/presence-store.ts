@@ -23,9 +23,13 @@ export interface Peer {
 interface PresenceState {
   noteId: string | null
   meId: string | null
+  meName: string | null
   peers: Record<string, Peer> // por userId, SEM eu mesmo
   channel: RealtimeChannel | null
   join: (noteId: string, me: { id: string; name: string }) => void
+  /** Reconexão pós-sleep/rede: recria o canal de presença com o mesmo (noteId, me) e
+   *  re-`track()`. No-op se não estou num canal. */
+  resubscribe: () => void
   leave: () => void
   setLocalCursor: (anchor: number, head: number) => void
 }
@@ -38,21 +42,10 @@ let _timer: ReturnType<typeof setTimeout> | null = null
 
 type PresenceMeta = { user_id: string; name: string }
 
-export const usePresenceStore = create<PresenceState>()((set, get) => ({
-  noteId: null,
-  meId: null,
-  peers: {},
-  channel: null,
-
-  join: (noteId, me) => {
-    const st = get()
-    if (st.channel && st.noteId === noteId && st.meId === me.id) return // já no canal certo
-    // Sai do canal anterior antes de entrar no novo.
-    if (st.channel) void supabase.removeChannel(st.channel)
-    if (_timer) { clearTimeout(_timer); _timer = null }
-    _pending = null
-    set({ noteId, meId: me.id, peers: {}, channel: null })
-
+export const usePresenceStore = create<PresenceState>()((set, get) => {
+  // (Re)cria o canal de presença + cursor pra (noteId, me). Reusado por join e resubscribe
+  // (a reconexão pós-sleep recria o canal com o mesmo par sem tocar no resto do estado).
+  const connect = (noteId: string, me: { id: string; name: string }) => {
     const channel = supabase.channel(`presence:note:${noteId}`, {
       config: { presence: { key: me.id } },
     })
@@ -106,6 +99,32 @@ export const usePresenceStore = create<PresenceState>()((set, get) => ({
       })
 
     set({ channel })
+  }
+
+  return {
+  noteId: null,
+  meId: null,
+  meName: null,
+  peers: {},
+  channel: null,
+
+  join: (noteId, me) => {
+    const st = get()
+    if (st.channel && st.noteId === noteId && st.meId === me.id) return // já no canal certo
+    // Sai do canal anterior antes de entrar no novo.
+    if (st.channel) void supabase.removeChannel(st.channel)
+    if (_timer) { clearTimeout(_timer); _timer = null }
+    _pending = null
+    set({ noteId, meId: me.id, meName: me.name, peers: {}, channel: null })
+    connect(noteId, me)
+  },
+
+  resubscribe: () => {
+    const st = get()
+    if (!st.noteId || !st.meId || !st.meName) return // não estou em nenhum canal
+    if (st.channel) void supabase.removeChannel(st.channel)
+    set({ peers: {}, channel: null })
+    connect(st.noteId, { id: st.meId, name: st.meName })
   },
 
   leave: () => {
@@ -113,7 +132,7 @@ export const usePresenceStore = create<PresenceState>()((set, get) => ({
     if (st.channel) void supabase.removeChannel(st.channel)
     if (_timer) { clearTimeout(_timer); _timer = null }
     _pending = null
-    set({ channel: null, noteId: null, meId: null, peers: {} })
+    set({ channel: null, noteId: null, meId: null, meName: null, peers: {} })
   },
 
   setLocalCursor: (anchor, head) => {
@@ -139,4 +158,5 @@ export const usePresenceStore = create<PresenceState>()((set, get) => ({
       _timer = setTimeout(() => { _timer = null; if (_pending) flush() }, BROADCAST_MS - elapsed)
     }
   },
-}))
+  }
+})

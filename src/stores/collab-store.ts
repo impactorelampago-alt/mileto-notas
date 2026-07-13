@@ -60,6 +60,7 @@ interface Internal {
   dirty: boolean // há mudança (minha ou de outro) ainda não persistida
   persistTicker: ReturnType<typeof setInterval> | null // grava o estado (só o cliente ELEITO)
   heartbeat: ReturnType<typeof setInterval> | null // refresca minha awareness + GC de peers obsoletos
+  rewire: (() => void) | null // recria o canal de broadcast (reconexão) sem perder o Y.Doc
 }
 
 interface CollabState {
@@ -70,13 +71,16 @@ interface CollabState {
    *  `editable=false` (viewer só-leitura): só RECEBE ao vivo — não semeia, não persiste;
    *  se ainda não existe estado CRDT, NÃO abre (o front cai no modo simples/notes.content). */
   open: (noteId: string, seed: string, me: { id: string; name: string }, onSnapshot: (noteId: string, markdown: string) => void, editable: boolean) => Promise<void>
+  /** Reconexão pós-sleep/rede: recria o canal de broadcast da sessão atual (mantém o
+   *  Y.Doc) e re-dispara o sync-req. No-op se não houver sessão aberta. */
+  resubscribe: () => void
   close: () => void
 }
 
 const HEARTBEAT_MS = 15000
 const AWARENESS_TIMEOUT_MS = 32000 // peer sem refrescar por > isto = obsoleto (fechou/dormiu)
 
-const _i: Internal = { session: null, channel: null, onSnapshot: null, updateHandler: null, awarenessHandler: null, peersHandler: null, peersKey: '', editable: true, dirty: false, persistTicker: null, heartbeat: null }
+const _i: Internal = { session: null, channel: null, onSnapshot: null, updateHandler: null, awarenessHandler: null, peersHandler: null, peersKey: '', editable: true, dirty: false, persistTicker: null, heartbeat: null, rewire: null }
 
 async function loadState(noteId: string): Promise<Uint8Array | null> {
   const { data, error } = await supabase.from('note_yjs').select('state').eq('note_id', noteId).maybeSingle()
@@ -114,6 +118,7 @@ function teardown() {
   _i.peersKey = ''
   _i.onSnapshot = null
   _i.dirty = false
+  _i.rewire = null
 }
 
 export const useCollabStore = create<CollabState>()((set, get) => ({
@@ -169,43 +174,15 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       return
     }
 
-    // 2) Canal de sync ao vivo (broadcast de updates Yjs + awareness).
-    const channel = supabase.channel(`collab:note:${noteId}`, { config: { broadcast: { self: false } } })
-
-    channel
-      .on('broadcast', { event: 'yupdate' }, (msg) => {
-        const d = msg.payload as { u?: string } | undefined
-        if (!d?.u) return
-        try { Y.applyUpdate(doc, b64ToU8(d.u), 'remote') } catch { /* update corrompido — ignora */ }
-      })
-      .on('broadcast', { event: 'awareness' }, (msg) => {
-        const d = msg.payload as { u?: string } | undefined
-        if (!d?.u) return
-        try { applyAwarenessUpdate(awareness, b64ToU8(d.u), 'remote') } catch { /* noop */ }
-      })
-      // Sync de late-joiner: quem entra pede o estado (state vector); quem tem manda o diff.
-      .on('broadcast', { event: 'sync-req' }, (msg) => {
-        const d = msg.payload as { sv?: string } | undefined
-        if (!d?.sv) return
-        try {
-          const diff = Y.encodeStateAsUpdate(doc, b64ToU8(d.sv))
-          void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(diff) } })
-        } catch { /* noop */ }
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          // Pede aos peers o que eu ainda não tenho (updates feitos antes de eu entrar no canal).
-          void channel.send({ type: 'broadcast', event: 'sync-req', payload: { sv: u8ToB64(Y.encodeStateVector(doc)) } })
-        }
-      })
-
-    // 3) Propaga updates locais + agenda persistência/snapshot.
+    // 2) Handlers de edição/awareness (presos ao doc/awareness — ESTÁVEIS). Enviam sempre
+    //    pelo canal ATUAL `_i.channel`, que a reconexão (resubscribe → wireChannel) troca
+    //    sem destruir o Y.Doc.
     const updateHandler = (update: Uint8Array, origin: unknown) => {
       if (origin === 'load') return
       // Só re-transmito o que EU editei (origin local). Update de outro (remote) já veio
       // do canal — não reenvia (evita eco).
       if (origin !== 'remote') {
-        void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(update) } })
+        void _i.channel?.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(update) } })
       }
       // Qualquer edição (minha OU de outro) deixa o doc "sujo" → o cliente ELEITO grava
       // no próximo tick. Assim o note_yjs/notes.content fica em dia com UM só gravador.
@@ -220,9 +197,45 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       if (origin === 'remote') return
       const changed = [...changes.added, ...changes.updated, ...changes.removed]
       if (changed.length === 0) return
-      void channel.send({ type: 'broadcast', event: 'awareness', payload: { u: u8ToB64(encodeAwarenessUpdate(awareness, changed)) } })
+      void _i.channel?.send({ type: 'broadcast', event: 'awareness', payload: { u: u8ToB64(encodeAwarenessUpdate(awareness, changed)) } })
     }
     awareness.on('update', awarenessHandler)
+
+    // 3) Canal de sync ao vivo (broadcast de updates Yjs + awareness). `wireChannel` cria
+    //    — ou RECRIA, na reconexão — o canal; o resubscribe reusa esta MESMA função pra
+    //    reviver o canal morto (pós-sleep/rede) sem tocar no Y.Doc.
+    const wireChannel = () => {
+      if (_i.channel) void supabase.removeChannel(_i.channel)
+      const channel = supabase.channel(`collab:note:${noteId}`, { config: { broadcast: { self: false } } })
+      channel
+        .on('broadcast', { event: 'yupdate' }, (msg) => {
+          const d = msg.payload as { u?: string } | undefined
+          if (!d?.u) return
+          try { Y.applyUpdate(doc, b64ToU8(d.u), 'remote') } catch { /* update corrompido — ignora */ }
+        })
+        .on('broadcast', { event: 'awareness' }, (msg) => {
+          const d = msg.payload as { u?: string } | undefined
+          if (!d?.u) return
+          try { applyAwarenessUpdate(awareness, b64ToU8(d.u), 'remote') } catch { /* noop */ }
+        })
+        // Sync de late-joiner: quem entra pede o estado (state vector); quem tem manda o diff.
+        .on('broadcast', { event: 'sync-req' }, (msg) => {
+          const d = msg.payload as { sv?: string } | undefined
+          if (!d?.sv) return
+          try {
+            const diff = Y.encodeStateAsUpdate(doc, b64ToU8(d.sv))
+            void channel.send({ type: 'broadcast', event: 'yupdate', payload: { u: u8ToB64(diff) } })
+          } catch { /* noop */ }
+        })
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            // Pede aos peers o que eu ainda não tenho (updates de antes de eu (re)entrar no canal).
+            void channel.send({ type: 'broadcast', event: 'sync-req', payload: { sv: u8ToB64(Y.encodeStateVector(doc)) } })
+          }
+        })
+      _i.channel = channel
+    }
+    wireChannel()
 
     // Barra "quem está aqui": lista de peers do awareness (nome/cor), sem eu mesmo, só
     // atualizando o store quando o CONJUNTO muda (não a cada movimento de cursor).
@@ -272,7 +285,7 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     }, HEARTBEAT_MS)
 
     _i.session = { noteId, doc, ytext, awareness, undoManager }
-    _i.channel = channel
+    _i.rewire = wireChannel
     _i.updateHandler = updateHandler
     _i.awarenessHandler = awarenessHandler
     _i.peersHandler = refreshPeers
@@ -282,6 +295,14 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
     _i.dirty = false
     set({ session: _i.session, loading: false })
     refreshPeers()
+  },
+
+  resubscribe: () => {
+    // O canal de broadcast morreu junto com o socket (sleep/rede). Recria SÓ o canal
+    // (mantém Y.Doc/awareness/undo) e o SUBSCRIBED re-dispara o sync-req → recupera o que
+    // passou enquanto estive fora. No-op se não há sessão aberta.
+    if (!_i.session || !_i.rewire) return
+    _i.rewire()
   },
 
   close: () => {

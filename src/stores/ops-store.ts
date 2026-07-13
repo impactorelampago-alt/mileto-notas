@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase'
 import { useNotesStore } from './notes-store'
 import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
+import { useCollabStore } from './collab-store'
+import { usePresenceStore } from './presence-store'
 import type { NotePriority, Recurrence } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
 import { ownerPrefixOfKey } from '../lib/sections'
@@ -1018,43 +1020,53 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
    * Returns a cleanup function to be called on unmount.
    */
   setupAutoReconciliation: () => {
-    // Reconecta o Realtime SE o socket não está aberto. Depois de sleep/queda de rede
-    // o WebSocket costuma morrer CALADO (sem disparar CLOSED → sem o retry de 5s), e o
-    // subscribeToOpsChanges só rodava no login → o tempo real ficava morto até um sync
-    // manual. `isConnected()` é o estado real do socket; quando aberto, é no-op (sem churn).
-    const reconnectRealtime = () => {
-      if (!supabase.realtime.isConnected()) {
-        get().subscribeToOpsChanges()
-        const activeId = useNotesStore.getState().activeTabId
-        if (activeId) useNotesStore.getState().subscribeToNote(activeId)
-      }
+    // Reconecta o Realtime. `force=false`: só age se o socket NÃO está aberto — no-op sem
+    // churn quando saudável (`isConnected()` = estado real do socket). `force=true`:
+    // reconecta SEMPRE — usado ao ACORDAR do sleep, quando o isConnected() ainda pode mentir
+    // "conectado" por um socket que morreu na suspensão. Depois de sleep/queda de rede o
+    // WebSocket costuma morrer CALADO (sem disparar CLOSED → sem o retry de 5s do canal).
+    const reviveRealtime = (force: boolean) => {
+      if (!force && supabase.realtime.isConnected()) return
+      get().subscribeToOpsChanges()
+      const activeId = useNotesStore.getState().activeTabId
+      if (activeId) useNotesStore.getState().subscribeToNote(activeId)
+      // O canal da CO-EDIÇÃO (Yjs) e o da PRESENÇA morreram junto com o socket — revive os
+      // dois pra "quem digita junto" voltar na hora (senão os dados voltam mas a co-edição
+      // fica muda, que é o sintoma relatado). No-op se não há sessão/canal aberto.
+      useCollabStore.getState().resubscribe()
+      usePresenceStore.getState().resubscribe()
     }
 
     // Ao voltar o foco pro app: reconecta o tempo real + recarrega shares/ops/notas
     // (pega categoria/nota compartilhada mesmo se o Realtime de shares não disparou).
     const handleVisibility = () => {
       if (document.visibilityState !== 'visible') return
-      reconnectRealtime()
+      reviveRealtime(false)
       void useSharingStore.getState().loadShares().then(() => {
         void get().refreshOpsSnapshot('window-focus').then(() => {
           void useNotesStore.getState().loadNotes()
         })
       })
     }
+    const onNetworkRevive = () => reviveRealtime(false)
+    // Electron acordou do sleep / destravou a tela → força a reconexão TOTAL (o
+    // isConnected() pode mentir logo após o resume). No-op fora do Electron (web).
+    const onPowerResume = () => reviveRealtime(true)
 
     document.addEventListener('visibilitychange', handleVisibility)
-    window.addEventListener('online', reconnectRealtime)
-    window.addEventListener('focus', reconnectRealtime)
+    window.addEventListener('online', onNetworkRevive)
+    window.addEventListener('focus', onNetworkRevive)
+    window.electronAPI?.power?.onResume(onPowerResume)
 
     const pollingTimer = setInterval(() => {
-      reconnectRealtime() // rede de segurança: reconecta em ≤10s se o socket caiu calado
+      reviveRealtime(false) // rede de segurança: reconecta em ≤10s se o socket caiu calado
       void get().refreshOpsSnapshot('polling-10s')
     }, 10_000)
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
-      window.removeEventListener('online', reconnectRealtime)
-      window.removeEventListener('focus', reconnectRealtime)
+      window.removeEventListener('online', onNetworkRevive)
+      window.removeEventListener('focus', onNetworkRevive)
       clearInterval(pollingTimer)
     }
   },

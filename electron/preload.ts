@@ -22,6 +22,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
   },
+  power: {
+    // Dispara quando o SO acorda do sleep / a tela é destravada → o renderer
+    // reconecta o tempo real. Listener único (evita acúmulo em re-registro).
+    onResume: (callback: () => void) => {
+      ipcRenderer.removeAllListeners('power:resume')
+      ipcRenderer.on('power:resume', () => callback())
+    },
+  },
   updates: {
     install: () => ipcRenderer.send('update:install'),
     check: () => ipcRenderer.send('update:check'),

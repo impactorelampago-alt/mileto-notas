@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, powerMonitor } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -37,6 +37,9 @@ function createWindow(): void {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false,
+      // Não congela timers/WebSocket quando a janela está minimizada/em background —
+      // sem isso o Chromium throttla o heartbeat do realtime e o tempo real "esfria".
+      backgroundThrottling: false,
     },
   })
 
@@ -135,6 +138,23 @@ autoUpdater.autoInstallOnAppQuit = true // rede de segurança
 function sendToRenderer(channel: string, payload?: unknown): void {
   mainWindow?.webContents.send(channel, payload)
 }
+
+// ── Reconexão do tempo real ao ACORDAR do sleep / destravar a tela ──────────
+// Durante o sleep o WebSocket morre (o SO suspende tudo); ao voltar, o socket
+// costuma ficar "zumbi" sem disparar CLOSED. Avisamos o renderer pra forçar a
+// reconexão total (ops + nota + co-edição + presença). Debounce anti-double-fire:
+// o 'resume' pode disparar 2x (ex.: macOS) e 'unlock-screen' logo em seguida.
+let lastPowerSignal = 0
+function signalPowerResume(): void {
+  const now = Date.now()
+  if (now - lastPowerSignal < 3000) return
+  lastPowerSignal = now
+  sendToRenderer('power:resume')
+}
+app.whenReady().then(() => {
+  powerMonitor.on('resume', signalPowerResume)
+  powerMonitor.on('unlock-screen', signalPowerResume)
+})
 
 function doInstall(): void {
   if (installing) return
