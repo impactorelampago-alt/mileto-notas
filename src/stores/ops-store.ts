@@ -1030,11 +1030,14 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       get().subscribeToOpsChanges()
       const activeId = useNotesStore.getState().activeTabId
       if (activeId) useNotesStore.getState().subscribeToNote(activeId)
-      // O canal da CO-EDIÇÃO (Yjs) e o da PRESENÇA morreram junto com o socket — revive os
-      // dois pra "quem digita junto" voltar na hora (senão os dados voltam mas a co-edição
-      // fica muda, que é o sintoma relatado). No-op se não há sessão/canal aberto.
-      useCollabStore.getState().resubscribe()
-      usePresenceStore.getState().resubscribe()
+      // Co-edição (Yjs) e presença: SÓ recria os canais no WAKE (force = powerMonitor).
+      // No caminho frequente (poll/foco/online) o rejoin automático do socket já os revive;
+      // recriar o canal de co-edição toda hora causava CHURN (broadcast perdido no meio →
+      // co-edição muda). Recriar só quando realmente acordou do sleep é seguro.
+      if (force) {
+        useCollabStore.getState().resubscribe()
+        usePresenceStore.getState().resubscribe()
+      }
     }
 
     // Ao voltar o foco pro app: reconecta o tempo real + recarrega shares/ops/notas

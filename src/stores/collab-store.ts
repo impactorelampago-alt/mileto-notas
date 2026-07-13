@@ -91,8 +91,18 @@ async function loadState(noteId: string): Promise<Uint8Array | null> {
 
 async function persistState(noteId: string, doc: Y.Doc): Promise<void> {
   try {
-    const b64 = u8ToB64(Y.encodeStateAsUpdate(doc))
-    await supabase.from('note_yjs').upsert({ note_id: noteId, state: b64, updated_at: new Date().toISOString() }, { onConflict: 'note_id' })
+    // ANTI-CLOBBER (crítico): MESCLA com o estado atual do banco ANTES de gravar. Como o
+    // broadcast pode não ter entregue tudo (VPS sobrecarregada), o MEU doc pode estar
+    // ATRÁS do de outro editor; gravar só o meu apagava o texto do outro — era a causa do
+    // "some quando saio". Com o merge (CRDT), o note_yjs SEMPRE ACUMULA: nenhum persist
+    // apaga edição de ninguém, e reabrir (que carrega daqui) mostra o texto de TODOS.
+    const mine = Y.encodeStateAsUpdate(doc)
+    const existing = await loadState(noteId)
+    const merged = existing ? Y.mergeUpdates([existing, mine]) : mine
+    await supabase.from('note_yjs').upsert(
+      { note_id: noteId, state: u8ToB64(merged), updated_at: new Date().toISOString() },
+      { onConflict: 'note_id' },
+    )
   } catch (e) { console.warn('[collab] persistState:', e) }
 }
 
