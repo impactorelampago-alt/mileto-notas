@@ -12,55 +12,66 @@ import { tags as t } from '@lezer/highlight'
 
 // ── Tema dark do editor (casa com o #2d2d2d atual) ─────────────────────────────
 export function editorTheme(fontSize: number): ReturnType<typeof EditorView.theme> {
-  const lh = Math.round(fontSize * 1.7)
+  const lh = Math.round(fontSize * 1.75)
   return EditorView.theme(
     {
-      '&': { backgroundColor: '#2d2d2d', color: '#cccccc', height: '100%', fontSize: `${fontSize}px` },
+      '&': { backgroundColor: '#2d2d2d', color: '#d4d4d4', height: '100%', fontSize: `${fontSize}px` },
       '.cm-scroller': {
-        fontFamily: "'JetBrains Mono', Consolas, monospace",
+        fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace",
         lineHeight: `${lh}px`,
-        padding: '22px 0',
+        padding: '24px 0',
         overflow: 'auto',
       },
-      '.cm-content': { padding: '0 32px', caretColor: '#cccccc' },
+      '.cm-content': { padding: '0 34px', caretColor: '#e6e6e6' },
       '.cm-line': { padding: '0' },
       '&.cm-focused': { outline: 'none' },
-      '.cm-cursor': { borderLeftColor: '#cccccc' },
-      '.cm-selectionBackground, ::selection': { backgroundColor: '#264f78 !important' },
-      '&.cm-focused .cm-selectionBackground': { backgroundColor: '#264f78 !important' },
-      '.cm-gutters': { backgroundColor: '#252526', color: '#6d6d6d', border: 'none', borderRight: '1px solid #353535' },
-      '.cm-activeLineGutter': { backgroundColor: '#2d2d2d' },
+      '.cm-cursor': { borderLeftColor: '#e6e6e6', borderLeftWidth: '2px' },
+      '.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(56, 92, 148, 0.5) !important' },
+      '&.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(56, 92, 148, 0.65) !important' },
+      '.cm-gutters': { backgroundColor: '#252526', color: '#5c5c62', border: 'none', borderRight: '1px solid #333338' },
+      '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#8a8a92' },
       '.cm-activeLine': { backgroundColor: 'transparent' },
-      '.cm-placeholder': { color: '#5a5a5a' },
+      '.cm-placeholder': { color: '#5a5a5f', fontStyle: 'italic' },
       // checkbox clicável
       '.cm-md-check': {
-        display: 'inline-block', width: '15px', height: '15px', verticalAlign: '-2px',
-        marginRight: '2px', borderRadius: '4px', border: '1.5px solid #6b6b70',
+        display: 'inline-block', width: '16px', height: '16px', verticalAlign: '-3px',
+        marginRight: '7px', borderRadius: '4px', border: '1.6px solid #5c5c64',
         cursor: 'pointer', position: 'relative', boxSizing: 'border-box',
+        transition: 'border-color 120ms, background-color 120ms',
       },
+      '.cm-md-check:hover': { borderColor: '#83838c' },
       '.cm-md-check.done': { backgroundColor: '#10b981', borderColor: '#10b981' },
+      '.cm-md-check.done:hover': { backgroundColor: '#0ea774', borderColor: '#0ea774' },
       '.cm-md-check.done::after': {
-        content: '""', position: 'absolute', left: '4px', top: '1px', width: '4px', height: '8px',
-        border: 'solid #04140e', borderWidth: '0 2px 2px 0', transform: 'rotate(45deg)',
+        content: '""', position: 'absolute', left: '5px', top: '1.5px', width: '4px', height: '8px',
+        border: 'solid #ffffff', borderWidth: '0 2px 2px 0', transform: 'rotate(45deg)',
       },
       // sublinhado (<u>) e marca-texto (==) — renderizados por decoração (regex)
-      '.cm-md-u': { textDecoration: 'underline' },
-      '.cm-md-hl': { backgroundColor: 'rgba(234, 179, 8, 0.28)', borderRadius: '2px', padding: '0 1px' },
+      '.cm-md-u': {
+        textDecoration: 'underline', textDecorationThickness: '1px',
+        textUnderlineOffset: '2px', textDecorationColor: 'rgba(212,212,212,0.55)',
+      },
+      '.cm-md-hl': { backgroundColor: 'rgba(250, 204, 21, 0.22)', borderRadius: '3px', padding: '0.06em 0.24em' },
       // bullet renderizado (• no lugar do "- ") + indentação das linhas de lista
-      '.cm-md-bullet': { color: '#9a9aa0', marginRight: '0.5em' },
-      '.cm-md-li': { paddingLeft: '1.3em' },
+      '.cm-md-bullet': { color: '#7d7d86', marginRight: '0.55em' },
+      '.cm-md-li': { paddingLeft: '1.45em' },
+      // citação (blockquote): barra à esquerda + recuo + fundo sutil
+      '.cm-md-quote': { borderLeft: '3px solid #4b4b54', paddingLeft: '14px', backgroundColor: 'rgba(255,255,255,0.022)' },
+      // divisor horizontal (---) → linha real
+      '.cm-md-hr': { display: 'inline-block', width: '100%', height: '0', borderTop: '1px solid #4a4a52', verticalAlign: 'middle' },
       // chip de menção a imagem ({{img:id}}) — clicável, leva/piscando a imagem na faixa
       '.cm-img-chip': {
-        display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '0 6px',
-        margin: '0 1px', height: '18px', verticalAlign: '-4px', borderRadius: '5px',
-        border: '1px solid #3a5f4a', backgroundColor: 'rgba(16,185,129,0.12)',
-        color: '#6ee7b7', cursor: 'pointer', fontSize: '0.82em', userSelect: 'none',
+        display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '0 7px',
+        margin: '0 1px', height: '19px', verticalAlign: '-4px', borderRadius: '6px',
+        border: '1px solid rgba(16,185,129,0.35)', backgroundColor: 'rgba(16,185,129,0.13)',
+        color: '#6ee7b7', cursor: 'pointer', fontSize: '0.82em', fontWeight: '500', userSelect: 'none',
+        transition: 'background-color 120ms',
       },
-      '.cm-img-chip:hover': { backgroundColor: 'rgba(16,185,129,0.22)' },
+      '.cm-img-chip:hover': { backgroundColor: 'rgba(16,185,129,0.24)' },
       // menção @Nome de membro do time
       '.cm-mention': {
-        color: '#93c5fd', backgroundColor: 'rgba(59,130,246,0.16)', borderRadius: '4px',
-        padding: '0 3px', fontWeight: '500',
+        color: '#93c5fd', backgroundColor: 'rgba(59,130,246,0.15)', borderRadius: '4px',
+        padding: '0.06em 0.32em', fontWeight: '500',
       },
     },
     { dark: true },
@@ -69,19 +80,19 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
 
 // ── Realce (negrito/itálico/título/código/citação/link/tachado/marca) ──────────
 export const mdHighlight = HighlightStyle.define([
-  { tag: t.heading1, color: '#e6e6e6', fontWeight: '700', fontSize: '1.5em' },
-  { tag: t.heading2, color: '#e6e6e6', fontWeight: '700', fontSize: '1.3em' },
-  { tag: t.heading3, color: '#e2e2e2', fontWeight: '700', fontSize: '1.15em' },
-  { tag: [t.heading4, t.heading5, t.heading6], color: '#e2e2e2', fontWeight: '700' },
-  { tag: t.strong, fontWeight: '700', color: '#f0f0f0' },
-  { tag: t.emphasis, fontStyle: 'italic', color: '#e0e0e0' },
-  { tag: t.strikethrough, textDecoration: 'line-through', color: '#8a8a8f' },
-  { tag: [t.monospace], color: '#e0a0a0', backgroundColor: '#3a2a2a', borderRadius: '3px', padding: '0 3px' },
-  { tag: t.link, color: '#5aa9e6', textDecoration: 'underline' },
+  { tag: t.heading1, color: '#f5f5f7', fontWeight: '700', fontSize: '1.55em' },
+  { tag: t.heading2, color: '#eff0f2', fontWeight: '700', fontSize: '1.3em' },
+  { tag: t.heading3, color: '#e9e9ec', fontWeight: '600', fontSize: '1.14em' },
+  { tag: [t.heading4, t.heading5, t.heading6], color: '#e2e2e6', fontWeight: '600' },
+  { tag: t.strong, fontWeight: '700', color: '#f4f4f6' },
+  { tag: t.emphasis, fontStyle: 'italic', color: '#dcdce0' },
+  { tag: t.strikethrough, textDecoration: 'line-through', color: '#7f7f88' },
+  { tag: [t.monospace], color: '#e0b989', backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: '4px', padding: '0.08em 0.34em' },
+  { tag: t.link, color: '#6cb1ee', textDecoration: 'underline', textUnderlineOffset: '2px' },
   { tag: t.url, color: '#6d6d75' },
-  { tag: t.quote, color: '#9aa0a6', fontStyle: 'italic' },
-  { tag: [t.list], color: '#cccccc' },
-  { tag: [t.processingInstruction, t.meta], color: '#6d6d75' }, // marcadores (**, #, -)
+  { tag: t.quote, color: '#a2a2ab', fontStyle: 'italic' },
+  { tag: [t.list], color: '#d4d4d4' },
+  { tag: [t.processingInstruction, t.meta], color: '#6a6a72' }, // marcadores (**, #, -)
   { tag: t.contentSeparator, color: '#5a5a5a' }, // ---
 ])
 
@@ -112,6 +123,17 @@ class BulletWidget extends WidgetType {
     const s = document.createElement('span')
     s.className = 'cm-md-bullet'
     s.textContent = '•'
+    return s
+  }
+}
+
+// ── Widget de divisor horizontal (--- vira uma linha real) ─────────────────────
+class HrWidget extends WidgetType {
+  eq() { return true }
+  toDOM(): HTMLElement {
+    const s = document.createElement('span')
+    s.className = 'cm-md-hr'
+    s.setAttribute('aria-hidden', 'true')
     return s
   }
 }
@@ -155,7 +177,9 @@ function buildDeco(view: EditorView): DecorationSet {
   const uMark = Decoration.mark({ class: 'cm-md-u' })
   const hlMark = Decoration.mark({ class: 'cm-md-hl' })
   const liLine = Decoration.line({ attributes: { class: 'cm-md-li' } })
+  const quoteLine = Decoration.line({ attributes: { class: 'cm-md-quote' } })
   const seenLi = new Set<number>()
+  const seenQuote = new Set<number>()
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -185,12 +209,30 @@ function buildDeco(view: EditorView): DecorationSet {
           return
         }
 
-        // Cabeçalho / citação (marcador de BLOCO): SEMPRE esconde "# "/"> ".
-        if (name === 'HeaderMark' || name === 'QuoteMark') {
+        // Cabeçalho (marcador de BLOCO): SEMPRE esconde "# ".
+        if (name === 'HeaderMark') {
           let end = node.to
           if (state.sliceDoc(end, end + 1) === ' ') end += 1
           if (node.from < end) deco.push(hide.range(node.from, end))
           return
+        }
+
+        // Citação: barra à esquerda na linha (blockquote) + esconde o "> ".
+        if (name === 'QuoteMark') {
+          const line = state.doc.lineAt(node.from)
+          if (!seenQuote.has(line.from)) { seenQuote.add(line.from); deco.push(quoteLine.range(line.from)) }
+          let end = node.to
+          if (state.sliceDoc(end, end + 1) === ' ') end += 1
+          if (node.from < end) deco.push(hide.range(node.from, end))
+          return
+        }
+
+        // Divisor horizontal (---) → linha real. Revela o cru quando o cursor toca (p/ editar).
+        if (name === 'HorizontalRule') {
+          if (!touches(node.from, node.to)) {
+            deco.push(Decoration.replace({ widget: new HrWidget() }).range(node.from, node.to))
+          }
+          return false
         }
 
         // Lista: indenta a linha e SEMPRE formata — bullet "-" vira "•"; o "- " do item de
