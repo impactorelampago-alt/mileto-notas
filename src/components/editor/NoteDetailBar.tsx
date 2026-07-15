@@ -41,7 +41,7 @@ function firstName(name: string): string {
 /** Barra de detalhe da nota (espelha o detalhe da tarefa do Ops): Categoria ·
  * Prioridade · Prazo · Empresa · Recorrência. Fica entre as abas e o editor.
  * Tudo grava na TASK (fonte de verdade do Ops) via updateTaskFields / updateNote. */
-export default function NoteDetailBar() {
+export default function NoteDetailBar({ livePeers = [] }: { livePeers?: { key: string; name: string; color: string }[] }) {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
   const sections = useOpsStore((s) => s.sections)
@@ -77,6 +77,17 @@ export default function NoteDetailBar() {
     () => (activeNote?.task_id ? tasks.find((t) => t.id === activeNote.task_id) ?? null : null),
     [activeNote?.task_id, tasks],
   )
+
+  // Presença AO VIVO: quem está com a nota aberta agora. Dedup por nome (1 pessoa = 1 avatar,
+  // mesmo com 2 abas/clientes abertos).
+  const live = useMemo(() => {
+    const seen = new Set<string>()
+    const out: { name: string; color: string }[] = []
+    for (const p of livePeers) {
+      if (p.name && !seen.has(p.name)) { seen.add(p.name); out.push({ name: p.name, color: p.color }) }
+    }
+    return out
+  }, [livePeers])
 
   if (!activeNote) return null
 
@@ -370,29 +381,77 @@ export default function NoteDetailBar() {
         {done && (
           <span style={{ fontSize: 11, color: '#34d399', fontWeight: 600 }}>✓ Concluída</span>
         )}
-        {/* HISTÓRICO — última edição (quem/quando) + popover com a lista completa */}
-        {lastEdit && (
+        {/* ATIVIDADE — quem está editando AGORA (avatares + pulse) ou, se ninguém, a última
+            edição. Clique abre o popover: presença ao vivo + histórico. (Antes a presença
+            flutuava sobre os botões das Subnotas.) */}
+        {(live.length > 0 || lastEdit) && (
           <div className="relative">
             <button
               onClick={() => toggle('hist')}
               className="flex items-center rounded-md"
+              title={live.length > 0 ? `${live.map((p) => p.name).join(', ')} editando agora` : 'Histórico de edições'}
               style={{
-                gap: 6, height: 24, padding: '0 8px', fontSize: 11,
-                color: '#8a8a92', backgroundColor: pop === 'hist' ? '#333' : 'transparent',
-                border: '1px solid #333', transition: 'background-color 120ms',
+                gap: 7, height: 26, padding: live.length > 0 ? '0 9px 0 5px' : '0 8px', fontSize: 11,
+                color: live.length > 0 ? '#a7f3d0' : '#8a8a92',
+                backgroundColor: pop === 'hist' ? '#333' : live.length > 0 ? 'rgba(16,185,129,0.10)' : 'transparent',
+                border: `1px solid ${live.length > 0 ? 'rgba(16,185,129,0.30)' : '#333'}`,
+                transition: 'background-color 120ms, border-color 120ms',
               }}
-              onMouseEnter={(e) => { if (pop !== 'hist') e.currentTarget.style.backgroundColor = '#2a2a2a' }}
-              onMouseLeave={(e) => { if (pop !== 'hist') e.currentTarget.style.backgroundColor = 'transparent' }}
-              title="Histórico de edições"
+              onMouseEnter={(e) => { if (pop !== 'hist') e.currentTarget.style.backgroundColor = live.length > 0 ? 'rgba(16,185,129,0.16)' : '#2a2a2a' }}
+              onMouseLeave={(e) => { if (pop !== 'hist') e.currentTarget.style.backgroundColor = live.length > 0 ? 'rgba(16,185,129,0.10)' : 'transparent' }}
             >
-              <History size={12} />
-              <span className="truncate" style={{ maxWidth: 160 }}>
-                {firstName(nameFor(lastEdit.editor_id))} · {timeAgo(lastEdit.edited_at)}
-              </span>
+              {live.length > 0 ? (
+                <>
+                  <span style={{ display: 'flex', alignItems: 'center' }}>
+                    {live.slice(0, 3).map((p, i) => (
+                      <span
+                        key={p.name}
+                        style={{
+                          width: 18, height: 18, borderRadius: '50%', backgroundColor: p.color, color: '#fff',
+                          fontSize: 9.5, fontWeight: 700, display: 'grid', placeItems: 'center',
+                          border: '1.5px solid #262626', marginLeft: i === 0 ? 0 : -6, flexShrink: 0,
+                        }}
+                      >
+                        {p.name.charAt(0).toUpperCase()}
+                      </span>
+                    ))}
+                  </span>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#34d399', flexShrink: 0, animation: 'presence-pulse 1.5s ease-in-out infinite' }} />
+                  <span className="truncate" style={{ maxWidth: 150, fontWeight: 500 }}>
+                    {live.length === 1
+                      ? `${firstName(live[0].name)} editando`
+                      : live.length === 2
+                        ? `${firstName(live[0].name)}, ${firstName(live[1].name)}`
+                        : `${firstName(live[0].name)} +${live.length - 1}`}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <History size={12} />
+                  <span className="truncate" style={{ maxWidth: 160 }}>
+                    {firstName(nameFor(lastEdit!.editor_id))} · {timeAgo(lastEdit!.edited_at)}
+                  </span>
+                </>
+              )}
             </button>
             {pop === 'hist' && (
-              <div style={{ ...popStyle, left: 'auto', right: 0, width: 240, maxHeight: 300, overflowY: 'auto' }}>
-                <div style={{ padding: '4px 8px 6px', fontSize: 11, color: '#71717a' }}>Histórico de edição</div>
+              <div style={{ ...popStyle, left: 'auto', right: 0, width: 240, maxHeight: 320, overflowY: 'auto' }}>
+                {live.length > 0 && (
+                  <>
+                    <div style={{ padding: '4px 8px 6px', fontSize: 11, color: '#34d399', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#34d399', animation: 'presence-pulse 1.5s ease-in-out infinite' }} />
+                      Editando agora
+                    </div>
+                    {live.map((p) => (
+                      <div key={'live-' + p.name} className="flex items-center" style={{ gap: 8, padding: '6px 9px' }}>
+                        <span style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: p.color, color: '#fff', fontSize: 9.5, fontWeight: 700, display: 'grid', placeItems: 'center', flexShrink: 0 }}>{p.name.charAt(0).toUpperCase()}</span>
+                        <span className="flex-1 truncate" style={{ fontSize: 12.5, color: '#e4e4e7' }}>{p.name}</span>
+                      </div>
+                    ))}
+                    {edits.length > 0 && <div style={{ height: 1, backgroundColor: '#2f2f2f', margin: '6px 4px' }} />}
+                  </>
+                )}
+                {edits.length > 0 && <div style={{ padding: '4px 8px 6px', fontSize: 11, color: '#71717a' }}>Histórico de edição</div>}
                 {edits.map((e, i) => (
                   <div key={`${e.editor_id}-${e.edited_at}`} className="flex items-center" style={{ gap: 8, padding: '6px 9px' }}>
                     <span style={{ width: 6, height: 6, borderRadius: 999, backgroundColor: i === 0 ? '#10b981' : '#52525b', flexShrink: 0 }} />

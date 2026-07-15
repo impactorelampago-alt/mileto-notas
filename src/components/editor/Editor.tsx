@@ -318,28 +318,12 @@ export default function Editor() {
 
   return (
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
-      <NoteDetailBar />
+      {/* Presença ao vivo agora vive na NoteDetailBar (unificada com "última edição") —
+          antes era um overlay flutuante que caía sobre os botões das Subnotas. */}
+      <NoteDetailBar livePeers={barPeers} />
 
       <div className="relative flex flex-1 overflow-hidden">
         {subnoteSide === 'left' && <SubnoteTree />}
-        {barPeers.length > 0 && (
-          <div className="pointer-events-none absolute z-10 flex items-center gap-1" style={{ top: 8, right: 14 }}>
-            {barPeers.map((p) => (
-              <span
-                key={p.key}
-                title={`${p.name} está editando`}
-                className="flex items-center gap-1 rounded-full"
-                style={{
-                  backgroundColor: p.color, color: '#fff', fontSize: 11, fontWeight: 600,
-                  padding: '2px 9px', boxShadow: '0 1px 4px rgba(0,0,0,0.35)', whiteSpace: 'nowrap',
-                }}
-              >
-                <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#fff', opacity: 0.9 }} />
-                {p.name}
-              </span>
-            ))}
-          </div>
-        )}
         <MarkdownEditor
           ref={editorRef}
           value={localContent}

@@ -115,6 +115,12 @@ button {
   -ms-overflow-style: none;
 }
 
+/* Pulso do indicador "editando agora" (presença ao vivo na barra de detalhe) */
+@keyframes presence-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.78); }
+}
+
 /* Flash da linha mencionada (deep-link da notificação de @menção) */
 @keyframes cm-flash-line {
   0%, 100% { background-color: transparent; }
