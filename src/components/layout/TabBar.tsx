@@ -6,6 +6,7 @@ import { useOpsStore, SYSTEM_SUFFIXES } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useSharingStore } from '../../stores/sharing-store'
+import { useWorkspacePresenceStore } from '../../stores/workspace-presence-store'
 import { NOTE_PRIORITY_COLORS, NOTE_PRIORITY_LABELS, normalizePriority } from '../../lib/note-priority'
 import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
 import type { NotePriority } from '../../lib/types'
@@ -49,6 +50,7 @@ export default function TabBar() {
   const viewAll = useAuthStore((s) => s.viewAll)
   const isDono = useAuthStore((s) => s.isDono())
   const noteShares = useSharingStore((s) => s.noteShares)
+  const wsPeers = useWorkspacePresenceStore((s) => s.byRoot)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
   const openConfirm = useUIStore((s) => s.openConfirm)
 
@@ -490,6 +492,17 @@ export default function TabBar() {
                       }}
                     >
                       {note.title || 'Sem título'}
+                    </span>
+                  )}
+
+                  {/* Presença ao vivo: alguém (remoto) está nesta nota ou numa subnota dela. */}
+                  {(wsPeers[noteId]?.length ?? 0) > 0 && (
+                    <span
+                      className="flex shrink-0 items-center justify-center"
+                      style={{ width: 9, height: 9 }}
+                      title={`${wsPeers[noteId].map((p) => p.name).join(', ')} ${wsPeers[noteId].length === 1 ? 'está nesta nota agora' : 'estão nesta nota agora'}`}
+                    >
+                      <span style={{ width: 8, height: 8, borderRadius: 999, backgroundColor: '#34d399', boxShadow: '0 0 0 3px rgba(52,211,153,0.18)', animation: 'presence-pulse 1.6s ease-in-out infinite' }} />
                     </span>
                   )}
 

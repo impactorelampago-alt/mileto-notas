@@ -21,12 +21,15 @@ import SharePickerModal from '../components/ui/SharePickerModal'
 import ConfirmModal from '../components/ui/ConfirmModal'
 import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
+import { useWorkspacePresenceStore } from '../stores/workspace-presence-store'
 import { loadDrafts, removeDraft, loadSession, saveSession } from '../lib/local-drafts'
 import { DEFAULT_SECTION_SUFFIX } from '../lib/sections'
 import { isStatusSuffix } from '../lib/status-keys'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const user = useAuthStore((s) => s.user)
+  const profile = useAuthStore((s) => s.profile)
   const loadNotes = useNotesStore((s) => s.loadNotes)
   const updateNote = useNotesStore((s) => s.updateNote)
   const activeTabId = useNotesStore((s) => s.activeTabId)
@@ -117,6 +120,25 @@ export default function MainApp() {
       n.clear()
     }
   }, [isAuthenticated])
+
+  // Presença de WORKSPACE: entra no canal compartilhado (usuário REAL) → a TabBar mostra
+  // a bolinha "tem gente aqui" na aba da nota. Sai ao deslogar/desmontar.
+  useEffect(() => {
+    if (!isAuthenticated || !user || !profile) return
+    const name = profile.name ?? user.email ?? 'Alguém'
+    useWorkspacePresenceStore.getState().join({ id: user.id, name })
+    return () => useWorkspacePresenceStore.getState().leave()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, user?.id, profile?.id])
+
+  // Publica a nota-RAIZ ativa (subnota → sua raiz; raiz → ela mesma, igual ao TabBar).
+  useEffect(() => {
+    if (!isAuthenticated) return
+    const rootId = activeTabId
+      ? (notes.find((n) => n.id === activeTabId)?.parent_note_id ?? activeTabId)
+      : null
+    useWorkspacePresenceStore.getState().setCurrentRoot(rootId)
+  }, [isAuthenticated, activeTabId, notes])
 
   // Persiste a sessão (abas abertas + aba ativa) localmente, para restauração
   // silenciosa estilo Bloco de Notas do Windows 11. Só grava depois do restore
