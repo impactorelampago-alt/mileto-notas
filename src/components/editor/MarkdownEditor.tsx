@@ -128,16 +128,27 @@ const remoteCaretTheme = EditorView.baseTheme({
   },
 })
 
-// URL do Link markdown que cobre `pos` (ou null). Usado pro clique-abre-link.
+// URL que cobre `pos` (ou null). Usado pro clique-abre-link. Cobre: link [texto](url),
+// URL "nua" (autolink GFM: http://…, www.…, email) e <url> (angle). Imagem markdown
+// ![alt](url) NÃO abre pelo clique (retorna null).
 function linkUrlAt(state: EditorState, pos: number): string | null {
-  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 0)
-  while (node && node.name !== 'Link') node = node.parent
-  if (!node) return null
-  let child: SyntaxNode | null = node.firstChild
-  while (child) {
-    if (child.name === 'URL') return state.sliceDoc(child.from, child.to).trim()
-    child = child.nextSibling
+  const inner: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 0)
+  // 1) Contexto mais próximo: Link (clicável) ou Image (não abre)?
+  let ctx: SyntaxNode | null = inner
+  while (ctx && ctx.name !== 'Link' && ctx.name !== 'Image') ctx = ctx.parent
+  if (ctx?.name === 'Image') return null
+  if (ctx?.name === 'Link') {
+    let child: SyntaxNode | null = ctx.firstChild
+    while (child) {
+      if (child.name === 'URL') return state.sliceDoc(child.from, child.to).trim()
+      child = child.nextSibling
+    }
+    return null
   }
+  // 2) URL nua / autolink (sem Link/Image por cima) — remove os <> do angle autolink.
+  let u: SyntaxNode | null = inner
+  while (u && u.name !== 'URL' && u.name !== 'Autolink') u = u.parent
+  if (u) return state.sliceDoc(u.from, u.to).replace(/^<|>$/g, '').trim()
   return null
 }
 
@@ -148,7 +159,8 @@ function openExternalUrl(raw: string): void {
   let url = raw.trim()
   if (!url) return
   if (!/^(https?:|mailto:)/i.test(url)) {
-    if (/^[\w-]+(\.[\w-]+)+/.test(url)) url = 'https://' + url
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(url)) url = 'mailto:' + url   // email nu → mailto:
+    else if (/^[\w-]+(\.[\w-]+)+/.test(url)) url = 'https://' + url     // domínio nu → https://
     else return
   }
   window.open(url, '_blank', 'noopener,noreferrer')
@@ -211,7 +223,13 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
         history(),
         drawSelection(),
         cmPlaceholder(propsRef.current.placeholder ?? ''),
-        markdown({ base: markdownLanguage, addKeymap: false }), // Enter/listas ficam com o listKeymap nosso
+        // Enter/listas ficam com o listKeymap nosso. Desligamos 2 parsers que transformam texto
+        // comum de forma INESPERADA num app de notas (verificado headless que não quebram nada):
+        //  • SetextHeading — "texto" + linha de '-'/'='/'---' embaixo NÃO vira título. O usuário
+        //    quer que "-" comece LISTA e "---" seja DIVISOR; título é só via #/##.
+        //  • IndentedCode — indentar 4 espaços / um Tab NÃO vira bloco de código (código é só via
+        //    crase inline ou ``` fenced). Lista/continuação/aninhada/fenced/inline seguem OK.
+        markdown({ base: markdownLanguage, addKeymap: false, extensions: [{ remove: ['SetextHeading', 'IndentedCode'] }] }),
         syntaxHighlighting(mdHighlight),
         livePreview,
         mentionHighlight,

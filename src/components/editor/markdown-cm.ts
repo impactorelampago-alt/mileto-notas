@@ -89,7 +89,7 @@ export const mdHighlight = HighlightStyle.define([
   { tag: t.strikethrough, textDecoration: 'line-through', color: '#7f7f88' },
   { tag: [t.monospace], color: '#e0b989', backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: '4px', padding: '0.08em 0.34em' },
   { tag: t.link, color: '#6cb1ee', textDecoration: 'underline', textUnderlineOffset: '2px' },
-  { tag: t.url, color: '#6d6d75' },
+  { tag: t.url, color: '#6cb1ee', textDecoration: 'underline', textUnderlineOffset: '2px' }, // URL nua = link
   { tag: t.quote, color: '#a2a2ab', fontStyle: 'italic' },
   { tag: [t.list], color: '#d4d4d4' },
   { tag: [t.processingInstruction, t.meta], color: '#6a6a72' }, // marcadores (**, #, -)
