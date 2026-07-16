@@ -5,10 +5,11 @@
 import { EditorView, Decoration, ViewPlugin, WidgetType } from '@codemirror/view'
 import type { DecorationSet, ViewUpdate, KeyBinding } from '@codemirror/view'
 import { EditorSelection } from '@codemirror/state'
-import type { Range } from '@codemirror/state'
+import type { Range, EditorState } from '@codemirror/state'
 import { HighlightStyle, syntaxTree } from '@codemirror/language'
 import { indentMore, indentLess } from '@codemirror/commands'
 import { tags as t } from '@lezer/highlight'
+import type { SyntaxNode } from '@lezer/common'
 
 // ── Tema dark do editor (casa com o #2d2d2d atual) ─────────────────────────────
 export function editorTheme(fontSize: number): ReturnType<typeof EditorView.theme> {
@@ -54,6 +55,8 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
       '.cm-md-hl': { backgroundColor: 'rgba(250, 204, 21, 0.22)', borderRadius: '3px', padding: '0.06em 0.24em' },
       // bullet renderizado (• no lugar do "- ") + indentação das linhas de lista
       '.cm-md-bullet': { color: '#7d7d86', marginRight: '0.55em' },
+      // número recalculado da lista ordenada (casa com a cor do marcador literal)
+      '.cm-md-onum': { color: '#6a6a72' },
       '.cm-md-li': { paddingLeft: '1.45em' },
       // citação (blockquote): barra à esquerda + recuo + fundo sutil
       '.cm-md-quote': { borderLeft: '3px solid #4b4b54', paddingLeft: '14px', backgroundColor: 'rgba(255,255,255,0.022)' },
@@ -129,6 +132,46 @@ class BulletWidget extends WidgetType {
     s.textContent = '•'
     return s
   }
+}
+
+// ── Widget do número da lista ordenada (número CALCULADO, não o literal) ───────
+class OrderMarkWidget extends WidgetType {
+  constructor(readonly text: string) { super() }
+  eq(o: OrderMarkWidget) { return o.text === this.text }
+  toDOM(): HTMLElement {
+    const s = document.createElement('span')
+    s.className = 'cm-md-onum'
+    s.textContent = this.text
+    return s
+  }
+}
+
+/** Número que ESTE item deveria exibir: número do 1º item da lista + a posição dele.
+ *  É a semântica do markdown (o renderizador numera em sequência e ignora os números
+ *  literais) — então a lista se reorganiza sozinha ao inserir/remover/mover item, sem
+ *  precisar reescrever o texto do usuário. Retorna null se não for lista ordenada. */
+function orderedMarkFor(state: EditorState, markNode: SyntaxNode, mark: string): string | null {
+  const li = markNode.parent
+  const ol = li?.parent
+  if (!li || li.name !== 'ListItem' || !ol || ol.name !== 'OrderedList') return null
+  let idx = 0
+  let start = 1
+  let first = true
+  for (let sib: SyntaxNode | null = ol.firstChild; sib; sib = sib.nextSibling) {
+    if (sib.name !== 'ListItem') continue
+    if (first) {
+      first = false
+      let fm: SyntaxNode | null = sib.firstChild
+      while (fm && fm.name !== 'ListMark') fm = fm.nextSibling
+      if (fm) {
+        const n = parseInt(state.sliceDoc(fm.from, fm.to), 10)
+        if (!Number.isNaN(n)) start = n
+      }
+    }
+    if (sib.from === li.from) return `${start + idx}${mark.slice(-1)}` // preserva "." ou ")"
+    idx++
+  }
+  return null
 }
 
 // ── Widget de divisor horizontal (--- vira uma linha real) ─────────────────────
@@ -259,6 +302,14 @@ function buildDeco(view: EditorView): DecorationSet {
             deco.push(hide.range(node.from, end)) // "- " some; fica só o checkbox
           } else if (/^[-*+]$/.test(mark)) {
             deco.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, end))
+          } else if (/^\d+[.)]$/.test(mark)) {
+            // Lista numerada: mostra o número CALCULADO pela posição (o que um renderizador
+            // markdown faria) em vez do literal → a lista se reorganiza sozinha ao inserir/
+            // remover/mover item. Só decora quando difere (o comum é não mexer em nada).
+            const expected = orderedMarkFor(state, node.node, mark)
+            if (expected && expected !== mark) {
+              deco.push(Decoration.replace({ widget: new OrderMarkWidget(expected) }).range(node.from, node.to))
+            }
           }
           return
         }

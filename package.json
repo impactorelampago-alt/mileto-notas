@@ -1,6 +1,6 @@
 {
   "name": "ops-notas",
-  "version": "1.4.47",
+  "version": "1.4.48",
   "description": "Mileto Notas — App desktop de bloco de notas colaborativo",
   "main": "dist-electron/main.js",
   "author": "Mileto",
