@@ -57,6 +57,10 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
       '.cm-md-li': { paddingLeft: '1.45em' },
       // citação (blockquote): barra à esquerda + recuo + fundo sutil
       '.cm-md-quote': { borderLeft: '3px solid #4b4b54', paddingLeft: '14px', backgroundColor: 'rgba(255,255,255,0.022)' },
+      // alinhamento de texto (token {{c}}/{{r}}/{{j}} na linha; sem token = esquerda)
+      '.cm-md-align-c': { textAlign: 'center' },
+      '.cm-md-align-r': { textAlign: 'right' },
+      '.cm-md-align-j': { textAlign: 'justify' },
       // divisor horizontal (---) → linha real
       '.cm-md-hr': { display: 'inline-block', width: '100%', height: '0', borderTop: '1px solid #4a4a52', verticalAlign: 'middle' },
       // chip de menção a imagem ({{img:id}}) — clicável, leva/piscando a imagem na faixa
@@ -178,8 +182,16 @@ function buildDeco(view: EditorView): DecorationSet {
   const hlMark = Decoration.mark({ class: 'cm-md-hl' })
   const liLine = Decoration.line({ attributes: { class: 'cm-md-li' } })
   const quoteLine = Decoration.line({ attributes: { class: 'cm-md-quote' } })
+  // Alinhamento por linha via token {{c}}/{{r}}/{{j}} (chaves não são sintaxe markdown →
+  // não colidem com nada e não deslocam o "# "/"- " do início, que quebraria título/lista).
+  const alignLine: Record<string, Decoration> = {
+    c: Decoration.line({ attributes: { class: 'cm-md-align-c' } }),
+    r: Decoration.line({ attributes: { class: 'cm-md-align-r' } }),
+    j: Decoration.line({ attributes: { class: 'cm-md-align-j' } }),
+  }
   const seenLi = new Set<number>()
   const seenQuote = new Set<number>()
+  const seenAlign = new Set<number>()
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -279,6 +291,19 @@ function buildDeco(view: EditorView): DecorationSet {
         const s = line.from + m.index
         deco.push(Decoration.replace({ widget: new ImageMentionWidget(m[1]) }).range(s, s + m[0].length))
       }
+      // Alinhamento {{c}}/{{r}}/{{j}} → esconde o token (em QUALQUER posição da linha) e
+      // alinha a LINHA toda. O 1º token manda; sem token = esquerda (padrão).
+      const alignRe = /\{\{([crj])\}\}/g
+      let alignKind: string | null = null
+      while ((m = alignRe.exec(line.text))) {
+        const s = line.from + m.index
+        deco.push(hide.range(s, s + m[0].length))
+        if (!alignKind) alignKind = m[1]
+      }
+      if (alignKind && !seenAlign.has(line.from)) {
+        seenAlign.add(line.from)
+        deco.push(alignLine[alignKind].range(line.from))
+      }
     }
   }
   return Decoration.set(deco, true)
@@ -354,6 +379,7 @@ export const tabKeymap: KeyBinding[] = [
 export type FormatKind =
   | 'bold' | 'italic' | 'underline' | 'strike' | 'code' | 'highlight'
   | 'h1' | 'h2' | 'quote' | 'ul' | 'ol' | 'checklist' | 'divider' | 'link' | 'today'
+  | 'alignLeft' | 'alignCenter' | 'alignRight' | 'alignJustify'
 
 function wrap(view: EditorView, before: string, after = before): void {
   const changes = view.state.changeByRange((range) => {
@@ -390,9 +416,31 @@ function prefixLines(view: EditorView, makePrefix: (i: number) => string): void 
   })
 }
 
+/** Alinha a(s) linha(s) da seleção: troca o token {{c}}/{{r}}/{{j}} da linha (esquerda =
+ *  sem token). Markdown não tem alinhamento — o token fica no texto (invisível no editor)
+ *  e o Ops o esconde/aplica na descrição da tarefa. */
+function setAlign(view: EditorView, kind: 'l' | 'c' | 'r' | 'j'): void {
+  const { state } = view
+  const sel = state.selection.main
+  const startLine = state.doc.lineAt(sel.from).number
+  const endLine = state.doc.lineAt(sel.to).number
+  const changes: { from: number; to: number; insert: string }[] = []
+  for (let n = startLine; n <= endLine; n++) {
+    const line = state.doc.line(n)
+    const cleaned = line.text.replace(/\{\{[crj]\}\}/g, '') // tira o alinhamento anterior
+    const next = kind === 'l' ? cleaned : cleaned + `{{${kind}}}`
+    if (next !== line.text) changes.push({ from: line.from, to: line.to, insert: next })
+  }
+  if (changes.length) view.dispatch({ changes, scrollIntoView: true })
+}
+
 export function applyFormat(view: EditorView, kind: FormatKind): void {
   if (view.state.readOnly) { view.focus(); return }
   switch (kind) {
+    case 'alignLeft': setAlign(view, 'l'); break
+    case 'alignCenter': setAlign(view, 'c'); break
+    case 'alignRight': setAlign(view, 'r'); break
+    case 'alignJustify': setAlign(view, 'j'); break
     case 'bold': wrap(view, '**'); break
     case 'italic': wrap(view, '_'); break
     case 'underline': wrap(view, '<u>', '</u>'); break

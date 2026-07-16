@@ -62,10 +62,11 @@ export const flashField = StateField.define<DecorationSet>({
 })
 
 // ── Backspace/Delete inteligente: apaga o TOKEN inteiro de uma vez ──────────────
-// Sem isto, apagar um chip de imagem ({{img:id}}) ou uma @menção revelava o código
-// cru e o usuário tinha que apagar char por char. Aqui, se o cursor está colado num
-// desses tokens, o backspace/delete remove o token todo.
-const IMG_TOKEN = /\{\{img:[0-9a-fA-F]{4,32}\}\}/
+// Sem isto, apagar um chip de imagem ({{img:id}}), um token de alinhamento ({{c}}/
+// {{r}}/{{j}}) ou uma @menção revelava o código cru e o usuário tinha que apagar char
+// por char. Aqui, se o cursor está colado num desses tokens, o backspace/delete remove
+// o token todo.
+const APP_TOKEN = /\{\{(?:img:[0-9a-fA-F]{4,32}|[crj])\}\}/
 
 function tokenAround(view: EditorView, side: 'before' | 'after'): { from: number; to: number } | null {
   const { state } = view
@@ -73,12 +74,12 @@ function tokenAround(view: EditorView, side: 'before' | 'after'): { from: number
   if (!r.empty || state.readOnly) return null
   const pos = r.from
   const line = state.doc.lineAt(pos)
-  // 1) chip de imagem {{img:...}} colado no cursor
+  // 1) token do app ({{img:...}} ou {{c}}/{{r}}/{{j}}) colado no cursor
   if (side === 'before') {
-    const m = new RegExp(IMG_TOKEN.source + '$').exec(state.sliceDoc(line.from, pos))
+    const m = new RegExp(APP_TOKEN.source + '$').exec(state.sliceDoc(line.from, pos))
     if (m) return { from: pos - m[0].length, to: pos }
   } else {
-    const m = new RegExp('^' + IMG_TOKEN.source).exec(state.sliceDoc(pos, line.to))
+    const m = new RegExp('^' + APP_TOKEN.source).exec(state.sliceDoc(pos, line.to))
     if (m) return { from: pos, to: pos + m[0].length }
   }
   // 2) @menção de membro do time colada no cursor

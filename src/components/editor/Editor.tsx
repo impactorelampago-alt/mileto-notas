@@ -3,6 +3,7 @@ import {
   NotebookPen, Bold, Italic, Underline, Strikethrough, Highlighter, Code,
   Heading1, Heading2, List, ListOrdered, ListChecks, Quote, Link2, Minus, Building2, Calendar,
   Share2, AtSign, X as XIcon,
+  AlignLeft, AlignCenter, AlignRight, AlignJustify,
 } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useUIStore } from '../../stores/ui-store'
@@ -33,7 +34,7 @@ function deriveTitle(content: string): string {
     .replace(/^\d+\.(\s+|$)/, '')
     .replace(/\*\*|__|~~|`|==/g, '')
     .replace(/<\/?u>/g, '')
-    .replace(/\{\{img:[0-9a-fA-F]{4,32}\}\}/g, '')
+    .replace(/\{\{(?:img:[0-9a-fA-F]{4,32}|[crj])\}\}/g, '') // chip de imagem + alinhamento
     .trim()
     .slice(0, 60)
 }
@@ -365,6 +366,24 @@ export default function Editor() {
               <div className="flex" style={{ gap: 2, padding: '0 4px 4px' }}>
                 {([['bold', Bold], ['italic', Italic], ['underline', Underline], ['strike', Strikethrough], ['highlight', Highlighter], ['code', Code]] as [FormatKind, typeof Bold][]).map(([k, Ic]) => (
                   <button key={k} onMouseDown={(e) => { e.preventDefault(); applyFormat(k) }}
+                    className="flex flex-1 items-center justify-center rounded-md transition-colors hover:bg-zinc-800"
+                    style={{ height: 30, color: '#d4d4d8' }}>
+                    <Ic size={14} />
+                  </button>
+                ))}
+              </div>
+              <div style={{ height: '0.5px', backgroundColor: '#333', margin: '3px 0' }} />
+              {/* ALINHAR — estilo WordPad. Aplica na(s) linha(s) da seleção. Atalhos:
+                  Ctrl+L / Ctrl+E / Ctrl+R / Ctrl+J (mesmos do Word). */}
+              <div style={{ padding: '3px 8px 4px', fontSize: 11, color: '#71717a' }}>Alinhar</div>
+              <div className="flex" style={{ gap: 2, padding: '0 4px 4px' }}>
+                {([
+                  ['alignLeft', AlignLeft, 'Esquerda (Ctrl+L)'],
+                  ['alignCenter', AlignCenter, 'Centro (Ctrl+E)'],
+                  ['alignRight', AlignRight, 'Direita (Ctrl+R)'],
+                  ['alignJustify', AlignJustify, 'Justificado (Ctrl+J)'],
+                ] as [FormatKind, typeof Bold, string][]).map(([k, Ic, tip]) => (
+                  <button key={k} title={tip} onMouseDown={(e) => { e.preventDefault(); applyFormat(k) }}
                     className="flex flex-1 items-center justify-center rounded-md transition-colors hover:bg-zinc-800"
                     style={{ height: 30, color: '#d4d4d8' }}>
                     <Ic size={14} />

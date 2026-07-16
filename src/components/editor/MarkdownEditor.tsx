@@ -216,6 +216,11 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       { key: 'Mod-b', run: (v: EditorView) => { doFormat(v, 'bold'); return true } },
       { key: 'Mod-i', run: (v: EditorView) => { doFormat(v, 'italic'); return true } },
       { key: 'Mod-u', run: (v: EditorView) => { doFormat(v, 'underline'); return true } },
+      // Alinhamento — mesmos atalhos do Word/WordPad.
+      { key: 'Mod-l', run: (v: EditorView) => { doFormat(v, 'alignLeft'); return true } },
+      { key: 'Mod-e', run: (v: EditorView) => { doFormat(v, 'alignCenter'); return true } },
+      { key: 'Mod-r', run: (v: EditorView) => { doFormat(v, 'alignRight'); return true } },
+      { key: 'Mod-j', run: (v: EditorView) => { doFormat(v, 'alignJustify'); return true } },
     ]
     const collab = propsRef.current.ytext
     const baseExtensions = [
