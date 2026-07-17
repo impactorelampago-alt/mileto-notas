@@ -18,6 +18,28 @@ import MarkdownEditor, { type MarkdownEditorHandle } from './MarkdownEditor'
 import type { FormatKind } from './markdown-cm'
 import { usePresenceStore } from '../../stores/presence-store'
 import { useCollabStore } from '../../stores/collab-store'
+import type { Text as YText } from 'yjs'
+
+// Aplica a EDIÇÃO MÍNIMA (preserva prefixo/sufixo comuns) pra fazer o Y.Text == target,
+// sem duplicar texto nem recriar a estrutura CRDT das partes intocadas. Usado pra
+// RECUPERAR o que foi digitado na janela de abertura da co-edição (ver o efeito de
+// reconciliação abaixo) — evita a perda "digitei e sumiu".
+function reconcileYText(yt: YText, target: string): void {
+  const cur = yt.toString()
+  if (cur === target) return
+  let start = 0
+  const min = Math.min(cur.length, target.length)
+  while (start < min && cur[start] === target[start]) start++
+  let ec = cur.length
+  let et = target.length
+  while (ec > start && et > start && cur[ec - 1] === target[et - 1]) { ec--; et-- }
+  const delLen = ec - start
+  const ins = target.slice(start, et)
+  yt.doc?.transact(() => {
+    if (delLen > 0) yt.delete(start, delLen)
+    if (ins) yt.insert(start, ins)
+  })
+}
 
 // Título = 1ª linha não-vazia, limpa dos marcadores markdown (fica bonito na aba e
 // na task do Ops, que mostra tasks.title).
@@ -81,6 +103,10 @@ export default function Editor() {
   const activeNoteIdRef = useRef<string | null>(null)
   activeNoteIdRef.current = activeNote?.id ?? null
   const prevNoteIdRef = useRef<string | null>(activeNote?.id ?? null)
+  // Houve edição em MODO SIMPLES nesta nota que ainda pode não estar no CRDT? (digitação
+  // na janela assíncrona de abertura da co-edição). Se sim, ao ligar a co-edição a gente
+  // reconcilia pra o ytext — senão o texto recém-digitado some. Zera ao trocar de nota.
+  const simpleModeEditedRef = useRef(false)
 
   // Posso EDITAR? (própria/DONO/compartilhada-EDIT/cargo). "Todos" é só-leitura exceto DONO.
   const isReadOnly = !isDono && (viewAll || (!!activeNote && !canEditNote(activeNote)))
@@ -112,6 +138,7 @@ export default function Editor() {
     setLocalContent(content)
     localContentRef.current = content
     syncedContentRef.current = content // baseline sincronizada da nova nota
+    simpleModeEditedRef.current = false // nota limpa: nada digitado em modo simples ainda
     setContextMenu(null)
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
   }, [activeNote?.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -176,6 +203,7 @@ export default function Editor() {
       if (collabOnRef.current) return
       setLocalContent(newContent)
       localContentRef.current = newContent
+      simpleModeEditedRef.current = true // edição em modo simples → recuperar se a co-edição ligar
       setSaveState('saving')
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(async () => {
@@ -245,6 +273,24 @@ export default function Editor() {
     return () => store.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNote?.id, isReadOnly, meId, myName])
+
+  // RECUPERAÇÃO DA JANELA DE ABERTURA (anti "digitei e sumiu"): a co-edição abre de forma
+  // ASSÍNCRONA. Enquanto o note_yjs carrega, o editor fica em modo simples e o que você
+  // digita cai em localContentRef — NÃO no CRDT. Quando a sessão liga, ela binda o ytext
+  // (carregado do note_yjs, SEM esses caracteres) e o snapshot seguinte sobrescreveria
+  // notes.content → o texto recém-digitado sumia de vez. Aqui, ao ligar a co-edição, se
+  // houve edição em modo simples ainda fora do CRDT, aplico a DIFERENÇA MÍNIMA no ytext →
+  // nada se perde e nada duplica. Só dispara no caso da corrida (flag zerada na troca de nota).
+  useEffect(() => {
+    if (!collabOn || !collabSession || isReadOnly) return
+    if (!simpleModeEditedRef.current) return
+    simpleModeEditedRef.current = false
+    const local = localContentRef.current
+    if (collabSession.ytext.toString() !== local) reconcileYText(collabSession.ytext, local)
+    syncedContentRef.current = local
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collabOn, collabSession])
 
   const onPasteImage = useCallback(
     (files: File[]) => {
