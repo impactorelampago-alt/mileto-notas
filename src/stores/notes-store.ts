@@ -156,6 +156,35 @@ const SKEW_TOLERANCE_MS = 5000
  * syncNotesFromTaskDescriptions consultar sem I/O. Reidratado por refreshPendingSync.
  */
 const _pendingDraftIds = new Set<string>()
+let _pendingDraftVersion = 0
+const _noteWriteQueues = new Map<string, Promise<void>>()
+
+function markPendingDraft(noteId: string): void {
+  if (_pendingDraftIds.has(noteId)) return
+  _pendingDraftIds.add(noteId)
+  _pendingDraftVersion++
+}
+
+function clearPendingDraft(noteId: string): void {
+  if (!_pendingDraftIds.delete(noteId)) return
+  _pendingDraftVersion++
+}
+
+/** Garante ordem de chegada no banco por nota. Sem esta fila, um request antigo e
+ * lento podia terminar depois do novo e recolocar conteúdo velho na nota/task. */
+function enqueueNoteWrite<T>(noteId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = _noteWriteQueues.get(noteId) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(operation)
+  const settled = current.then(
+    () => undefined,
+    () => undefined,
+  )
+  _noteWriteQueues.set(noteId, settled)
+  void settled.then(() => {
+    if (_noteWriteQueues.get(noteId) === settled) _noteWriteQueues.delete(noteId)
+  })
+  return current
+}
 
 /** Zera o token de acesso em cache. Chamado no logout para forçar re-autenticação. */
 export function clearNotesAuthCache(): void {
@@ -1162,83 +1191,85 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     if (updates.content !== undefined || updates.title !== undefined) {
       const merged = get().notes.find((n) => n.id === id)
       if (merged) {
-        _pendingDraftIds.add(id) // protege contra o sync da task sobrescrever
-        void saveDraft(id, { content: merged.content, title: merged.title, savedAt: merged.updated_at })
+        markPendingDraft(id) // protege contra o sync da task sobrescrever
+        await saveDraft(id, { content: merged.content, title: merged.title, savedAt: merged.updated_at })
       }
       void get().refreshPendingSync()
     }
 
-    // Salva na nuvem. Se FALHAR (offline/rede), NÃO reverte a edição na tela — ela
-    // continua visível e o rascunho local fica pendente, subindo sozinho quando a
-    // conexão voltar (flushPendingDrafts no evento `online`/foco). A nuvem continua
-    // sendo a verdade: assim que o save passa, o rascunho é descartado.
-    let cloudOk = true
-    let serverUpdatedAt: string | null = null
-    try {
-      const res = await notesPatch('notes', id, updates, { returnRow: true })
-      if (res && typeof res === 'object' && typeof (res as Record<string, unknown>).updated_at === 'string') {
-        serverUpdatedAt = (res as Record<string, unknown>).updated_at as string
+    await enqueueNoteWrite(id, async () => {
+      // Salva na nuvem. Se FALHAR (offline/rede), NÃO reverte a edição na tela — ela
+      // continua visível e o rascunho local fica pendente, subindo sozinho quando a
+      // conexão voltar (flushPendingDrafts no evento `online`/foco). A nuvem continua
+      // sendo a verdade: assim que o save passa, o rascunho é descartado.
+      let cloudOk = true
+      let serverUpdatedAt: string | null = null
+      try {
+        const res = await notesPatch('notes', id, updates, { returnRow: true })
+        if (res && typeof res === 'object' && typeof (res as Record<string, unknown>).updated_at === 'string') {
+          serverUpdatedAt = (res as Record<string, unknown>).updated_at as string
+        }
+      } catch (err) {
+        cloudOk = false
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        console.error('[notes] updateNote (notes) — mantido local, pendente de sync:', message)
       }
-    } catch (err) {
-      cloudOk = false
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      console.error('[notes] updateNote (notes) — mantido local, pendente de sync:', message)
-    }
 
-    if (!cloudOk) { void get().refreshPendingSync(); return } // rascunho pendente; sobe depois.
+      if (!cloudOk) { void get().refreshPendingSync(); return } // rascunho pendente; sobe depois.
 
-    // Adota o updated_at do SERVIDOR (relógio único). O optimistic set acima usou o
-    // relógio do CLIENTE; os guards de anti-sobrescrita (tsNewer no realtime/poll/sync da
-    // task) comparam contra o updated_at server-clock das outras notas — com skew de
-    // relógio isso fazia um remoto GENUÍNO parecer "mais velho" (edição sumia/piscava) ou
-    // o inverso. Reconciliando com o server, a comparação vira server-vs-server (sem skew).
-    if (serverUpdatedAt) {
-      const srv = serverUpdatedAt
-      set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, updated_at: srv } : n)) }))
-    }
+      // Adota o updated_at do SERVIDOR (relógio único). O optimistic set acima usou o
+      // relógio do CLIENTE; os guards de anti-sobrescrita (tsNewer no realtime/poll/sync da
+      // task) comparam contra o updated_at server-clock das outras notas — com skew de
+      // relógio isso fazia um remoto GENUÍNO parecer "mais velho" (edição sumia/piscava) ou
+      // o inverso. Reconciliando com o server, a comparação vira server-vs-server (sem skew).
+      if (serverUpdatedAt) {
+        const srv = serverUpdatedAt
+        set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, updated_at: srv } : n)) }))
+      }
 
-    // Save na nuvem da NOTA confirmado: descartamos o rascunho/pending SÓ quando
-    // NADA ficou por sincronizar. O patch é PARCIAL e o rascunho guarda os dois
-    // campos (content+title), então:
-    //  - o campo PRESENTE neste patch acabou de subir e ainda casa com o atual;
-    //  - o campo AUSENTE só está garantidamente sincronizado se NÃO havia pendência
-    //    ANTES desta chamada (wasPendingBefore=false). Senão ele pode ter uma
-    //    edição que nunca subiu (ex.: renome offline que falhou) — mantemos o
-    //    rascunho e o flushPendingDrafts (que reenvia content+title juntos) sobe e
-    //    limpa depois. Sem isso, ou se perdia o campo ausente, ou o id ficava preso
-    //    em _pendingDraftIds matando o sync/realtime externo da nota.
-    const saved = get().notes.find((n) => n.id === id)
-    const contentOk = updates.content !== undefined ? saved?.content === updates.content : !wasPendingBefore
-    const titleOk = updates.title !== undefined ? saved?.title === updates.title : !wasPendingBefore
-    if (saved && (updates.content !== undefined || updates.title !== undefined) && contentOk && titleOk) {
-      _pendingDraftIds.delete(id) // save confirmado: já não há edição local a proteger
-      // Aguarda o removeDraft GRAVAR antes de o refreshPendingSync RELER o disco —
-      // senão a releitura (que faz clear()+rehidrata) re-injetaria o id recém
-      // removido (race de read-modify-write não atômico), deixando o id preso e o
-      // realtime de entrada da nota suprimido. refreshPendingSync fica best-effort
-      // (void) pra uma eventual falha dele não interromper o sync da task abaixo.
-      await removeDraft(id)
-      void get().refreshPendingSync()
-    }
+      // Save na nuvem da NOTA confirmado: descartamos o rascunho/pending SÓ quando
+      // NADA ficou por sincronizar. O patch é PARCIAL e o rascunho guarda os dois
+      // campos (content+title), então:
+      //  - o campo PRESENTE neste patch acabou de subir e ainda casa com o atual;
+      //  - o campo AUSENTE só está garantidamente sincronizado se NÃO havia pendência
+      //    ANTES desta chamada (wasPendingBefore=false). Senão ele pode ter uma
+      //    edição que nunca subiu (ex.: renome offline que falhou) — mantemos o
+      //    rascunho e o flushPendingDrafts (que reenvia content+title juntos) sobe e
+      //    limpa depois. Sem isso, ou se perdia o campo ausente, ou o id ficava preso
+      //    em _pendingDraftIds matando o sync/realtime externo da nota.
+      const saved = get().notes.find((n) => n.id === id)
+      const contentOk = updates.content !== undefined ? saved?.content === updates.content : !wasPendingBefore
+      const titleOk = updates.title !== undefined ? saved?.title === updates.title : !wasPendingBefore
+      if (saved && (updates.content !== undefined || updates.title !== undefined) && contentOk && titleOk) {
+        clearPendingDraft(id) // save confirmado: já não há edição local a proteger
+        // Aguarda o removeDraft GRAVAR antes de o refreshPendingSync RELER o disco —
+        // senão a releitura (que faz clear()+rehidrata) re-injetaria o id recém
+        // removido (race de read-modify-write não atômico), deixando o id preso e o
+        // realtime de entrada da nota suprimido. refreshPendingSync fica best-effort
+        // (void) pra uma eventual falha dele não interromper o sync da task abaixo.
+        await removeDraft(id)
+        void get().refreshPendingSync()
+      }
 
-    // Sync bidirecional: se a nota tem task_id, sincronizar com a task no Mileto.
-    // O sync da TASK é independente — se falhar (ex: RLS), NÃO reverte a nota,
-    // que já foi salva com sucesso acima.
-    const taskId = updates.task_id !== undefined ? updates.task_id : note?.task_id
-    if (taskId) {
-      const taskUpdates: Record<string, unknown> = {}
-      if (updates.content !== undefined) taskUpdates.description = updates.content
-      if (updates.title !== undefined) taskUpdates.title = updates.title
-      if (updates.priority !== undefined) taskUpdates.priority = updates.priority
-      if (Object.keys(taskUpdates).length > 0) {
-        try {
-          await notesPatch('tasks', taskId, taskUpdates)
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Unknown error'
-          console.error('[notes] updateNote (task sync, nota mantida salva):', message)
+      // Sync bidirecional: se a nota tem task_id, sincronizar com a task no Mileto.
+      // O sync da TASK é independente — se falhar (ex: RLS), NÃO reverte a nota,
+      // que já foi salva com sucesso acima.
+      const taskId = updates.task_id !== undefined ? updates.task_id : note?.task_id
+      if (taskId) {
+        const taskUpdates: Record<string, unknown> = {}
+        if (updates.content !== undefined) taskUpdates.description = updates.content
+        if (updates.title !== undefined) taskUpdates.title = updates.title
+        if (updates.priority !== undefined) taskUpdates.priority = updates.priority
+        if (Object.keys(taskUpdates).length > 0) {
+          try {
+            await notesPatch('tasks', taskId, taskUpdates)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Unknown error'
+            console.error('[notes] updateNote (task sync, nota mantida salva):', message)
+          }
         }
       }
-    }
+    })
   },
 
   /**
@@ -1264,20 +1295,22 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       if (!isDono && note.is_shared_with_me && note.shared_permission !== 'EDIT') continue
       const draft = drafts[id]
       try {
-        await notesPatch('notes', id, { content: draft.content, title: draft.title })
-        if (note.task_id) {
-          try {
-            await notesPatch('tasks', note.task_id, { description: draft.content, title: draft.title })
-          } catch {
-            // sync da task é best-effort
+        await enqueueNoteWrite(id, async () => {
+          await notesPatch('notes', id, { content: draft.content, title: draft.title })
+          if (note.task_id) {
+            try {
+              await notesPatch('tasks', note.task_id, { description: draft.content, title: draft.title })
+            } catch {
+              // sync da task é best-effort
+            }
           }
-        }
-        // Subiu: se ainda é o conteúdo atual, descarta o rascunho.
-        const cur = get().notes.find((n) => n.id === id)
-        if (cur && cur.content === draft.content && cur.title === draft.title) {
-          _pendingDraftIds.delete(id)
-          void removeDraft(id)
-        }
+          // Subiu: se ainda é o conteúdo atual, descarta o rascunho.
+          const cur = get().notes.find((n) => n.id === id)
+          if (cur && cur.content === draft.content && cur.title === draft.title) {
+            clearPendingDraft(id)
+            await removeDraft(id)
+          }
+        })
       } catch {
         // Ainda offline/falhou — mantém o rascunho, tenta no próximo gatilho.
       }
@@ -1288,13 +1321,26 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   /** Recalcula quantos rascunhos locais estão pendentes (pro indicador de nuvem). */
   refreshPendingSync: async () => {
     try {
+      const versionBeforeRead = _pendingDraftVersion
       const d = await loadDrafts()
       const ids = Object.keys(d)
       // Reidrata o Set de proteção a partir da verdade local (cobre reinício do app
       // e rascunhos restaurados): garante que o sync da task respeite edições offline.
-      _pendingDraftIds.clear()
-      for (const id of ids) _pendingDraftIds.add(id)
-      set({ pendingSync: ids.length })
+      if (versionBeforeRead === _pendingDraftVersion) {
+        const diskIds = new Set(ids)
+        const changed = diskIds.size !== _pendingDraftIds.size
+          || Array.from(diskIds).some((id) => !_pendingDraftIds.has(id))
+        if (changed) {
+          _pendingDraftIds.clear()
+          for (const id of diskIds) _pendingDraftIds.add(id)
+          _pendingDraftVersion++
+        }
+      } else {
+        // Uma edição começou enquanto o disco era lido. Nunca a apaga com a foto
+        // antiga; apenas incorpora ids já confirmados no electron-store.
+        for (const id of ids) markPendingDraft(id)
+      }
+      set({ pendingSync: _pendingDraftIds.size })
     } catch {
       // silencioso — o backup local nunca pode quebrar o app
     }

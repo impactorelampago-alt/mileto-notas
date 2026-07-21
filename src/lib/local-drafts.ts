@@ -29,20 +29,34 @@ export interface SessionState {
 
 const DRAFTS_KEY = 'note-drafts'
 const SESSION_KEY = 'session-tabs'
+let draftOperationQueue: Promise<unknown> = Promise.resolve()
 
 function storage() {
   return window.electronAPI?.sessionStorage ?? null
 }
 
+function enqueueDraftOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = draftOperationQueue.then(operation, operation)
+  draftOperationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+async function readDraftsDirect(): Promise<Record<string, NoteDraft>> {
+  const raw = await storage()?.get(DRAFTS_KEY)
+  if (!raw) return {}
+  const parsed: unknown = JSON.parse(raw)
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed as Record<string, NoteDraft>
+  }
+  return {}
+}
+
 export async function loadDrafts(): Promise<Record<string, NoteDraft>> {
   try {
-    const raw = await storage()?.get(DRAFTS_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, NoteDraft>
-    }
-    return {}
+    return await enqueueDraftOperation(readDraftsDirect)
   } catch {
     return {}
   }
@@ -50,11 +64,13 @@ export async function loadDrafts(): Promise<Record<string, NoteDraft>> {
 
 export async function saveDraft(noteId: string, draft: NoteDraft): Promise<void> {
   try {
-    const store = storage()
-    if (!store) return
-    const drafts = await loadDrafts()
-    drafts[noteId] = draft
-    await store.set(DRAFTS_KEY, JSON.stringify(drafts))
+    await enqueueDraftOperation(async () => {
+      const store = storage()
+      if (!store) return
+      const drafts = await readDraftsDirect()
+      drafts[noteId] = draft
+      await store.set(DRAFTS_KEY, JSON.stringify(drafts))
+    })
   } catch {
     // O backup local nunca pode quebrar o app — falha em silêncio.
   }
@@ -62,13 +78,15 @@ export async function saveDraft(noteId: string, draft: NoteDraft): Promise<void>
 
 export async function removeDraft(noteId: string): Promise<void> {
   try {
-    const store = storage()
-    if (!store) return
-    const drafts = await loadDrafts()
-    if (noteId in drafts) {
-      delete drafts[noteId]
-      await store.set(DRAFTS_KEY, JSON.stringify(drafts))
-    }
+    await enqueueDraftOperation(async () => {
+      const store = storage()
+      if (!store) return
+      const drafts = await readDraftsDirect()
+      if (noteId in drafts) {
+        delete drafts[noteId]
+        await store.set(DRAFTS_KEY, JSON.stringify(drafts))
+      }
+    })
   } catch {
     // ignore
   }

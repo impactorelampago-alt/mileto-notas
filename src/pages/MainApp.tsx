@@ -22,6 +22,7 @@ import ConfirmModal from '../components/ui/ConfirmModal'
 import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
 import { useWorkspacePresenceStore } from '../stores/workspace-presence-store'
+import { useCollabStore } from '../stores/collab-store'
 import { loadDrafts, removeDraft, loadSession, saveSession } from '../lib/local-drafts'
 import { DEFAULT_SECTION_SUFFIX } from '../lib/sections'
 import { isStatusSuffix } from '../lib/status-keys'
@@ -188,14 +189,17 @@ export default function MainApp() {
           const note = useNotesStore.getState().notes.find((n) => n.id === id)
           if (!note) continue
           if (draft.content !== note.content || draft.title !== note.title) {
+            if (draft.content !== note.content) {
+              useCollabStore.getState().stageSimpleEdit(id, note.content, draft.content)
+            }
             useNotesStore.setState((s) => ({
               notes: s.notes.map((n) =>
                 n.id === id ? { ...n, content: draft.content, title: draft.title } : n,
               ),
             }))
-            void useNotesStore.getState().updateNote(id, { content: draft.content, title: draft.title })
+            await useNotesStore.getState().updateNote(id, { content: draft.content, title: draft.title })
           } else {
-            void removeDraft(id)
+            await removeDraft(id)
           }
         }
       } catch (err) {
