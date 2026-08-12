@@ -6,6 +6,7 @@ import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
 import { useCollabStore } from './collab-store'
 import { usePresenceStore } from './presence-store'
+import { useCategoryGroupsStore } from './category-groups-store'
 import type { NotePriority, Recurrence } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
 import { ownerPrefixOfKey } from '../lib/sections'
@@ -14,142 +15,323 @@ import { getStatusBase, buildStatusKey } from '../lib/status-keys'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
+interface OpsAuthContext {
+  generation: number
+  userId: string | null
+  token: string
+}
+
+interface OpsRefreshAttempt {
+  generation: number
+  userId: string
+  promise: Promise<string>
+}
+
+interface OpsResponse {
+  response: Response
+  context: OpsAuthContext
+}
+
 let _cachedToken: string | null = null
+let _cachedUserId: string | null = null
+let _authGeneration = 0
+let _sessionBootstrapAllowed = true
+let _refreshTokenAttempt: OpsRefreshAttempt | null = null
+const _invalidatedRefreshGenerations = new Set<number>()
+
+const OPS_REQUEST_TIMEOUT_MS = 15_000
+
+function invalidateOpsAuth(allowSessionBootstrap: boolean): void {
+  _authGeneration += 1
+  _cachedToken = null
+  _cachedUserId = null
+  _sessionBootstrapAllowed = allowSessionBootstrap
+  // A promise antiga pode terminar, mas deixa de ser reutilizável. O próprio
+  // attempt também confere geração/identidade antes de publicar seu resultado.
+  if (_refreshTokenAttempt) {
+    _invalidatedRefreshGenerations.add(_refreshTokenAttempt.generation)
+  }
+  _refreshTokenAttempt = null
+}
+
+// TOKEN_REFRESHED só pode atualizar a identidade já estabelecida. Isso impede
+// que o término tardio de um refresh da conta A ressuscite A após logout ou
+// contamine uma sessão recém-aberta da conta B.
+supabase.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_OUT' || !session) {
+    invalidateOpsAuth(false)
+    return
+  }
+
+  const nextUserId = session.user.id
+  if (event === 'TOKEN_REFRESHED') {
+    if (
+      _invalidatedRefreshGenerations.size === 0 &&
+      _sessionBootstrapAllowed &&
+      _cachedUserId === nextUserId
+    ) {
+      _cachedToken = session.access_token
+    }
+    return
+  }
+
+  if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+    _sessionBootstrapAllowed = true
+    if (_cachedUserId !== nextUserId) {
+      _authGeneration += 1
+      if (_refreshTokenAttempt) {
+        _invalidatedRefreshGenerations.add(_refreshTokenAttempt.generation)
+      }
+      _refreshTokenAttempt = null
+    }
+    _cachedUserId = nextUserId
+    _cachedToken = session.access_token
+    return
+  }
+
+  // USER_UPDATED e eventos equivalentes não têm autorização para trocar a
+  // identidade; podem apenas atualizar o token da sessão corrente.
+  if (_sessionBootstrapAllowed && _cachedUserId === nextUserId) {
+    _cachedToken = session.access_token
+  }
+})
 
 /** Zera o token de acesso em cache. Chamado no logout para forçar re-autenticação. */
-export function clearOpsAuthCache(): void {
-  _cachedToken = null
+export function clearOpsAuthCache(allowSessionBootstrap = false): void {
+  invalidateOpsAuth(allowSessionBootstrap)
+}
+
+function redactOpsError(message: string): string {
+  let safe = message
+  for (const secret of [SUPABASE_KEY, _cachedToken]) {
+    if (secret && secret.length >= 12) safe = safe.split(secret).join('[redacted]')
+  }
+
+  return safe
+    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[token redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 2000)
+}
+
+function opsErrorMessage(error: unknown): string {
+  return redactOpsError(error instanceof Error ? error.message : String(error))
+}
+
+async function describeHttpError(response: Response): Promise<string> {
+  const rawBody = await response.text().catch(() => '')
+  let detail = ''
+
+  if (rawBody) {
+    try {
+      const payload = JSON.parse(rawBody) as Record<string, unknown>
+      const parts: string[] = []
+      if (typeof payload.code === 'string') parts.push(`[${payload.code}]`)
+      if (typeof payload.message === 'string') parts.push(payload.message)
+      if (typeof payload.details === 'string' && payload.details !== payload.message) {
+        parts.push(`Detalhes: ${payload.details}`)
+      }
+      if (typeof payload.hint === 'string') parts.push(`Dica: ${payload.hint}`)
+      detail = parts.join(' | ')
+    } catch {
+      detail = rawBody
+    }
+  }
+
+  const statusText = response.statusText ? ` ${response.statusText}` : ''
+  const suffix = detail ? `: ${redactOpsError(detail)}` : ''
+  return `HTTP ${response.status}${statusText}${suffix}`
+}
+
+function authContextIsCurrent(context: OpsAuthContext): boolean {
+  return (
+    _sessionBootstrapAllowed &&
+    context.generation === _authGeneration &&
+    context.userId === _cachedUserId
+  )
+}
+
+function assertCurrentAuthContext(context: OpsAuthContext): void {
+  if (!authContextIsCurrent(context)) {
+    throw new Error('A sessão mudou durante a comunicação com o Ops; a resposta anterior foi descartada')
+  }
+}
+
+async function captureOpsAuthContext(): Promise<OpsAuthContext> {
+  if (_cachedToken && _cachedUserId && _sessionBootstrapAllowed) {
+    return { generation: _authGeneration, userId: _cachedUserId, token: _cachedToken }
+  }
+
+  if (!_sessionBootstrapAllowed) {
+    throw new Error('A sessão foi encerrada durante a comunicação com o Ops')
+  }
+
+  const captureGeneration = _authGeneration
+
+  const { data, error } = await supabase.auth.getSession()
+  if (error) throw new Error(`Não foi possível obter a sessão do Ops: ${opsErrorMessage(error)}`)
+
+  const session = data.session
+  if (captureGeneration !== _authGeneration) {
+    if (
+      session?.user.id === _cachedUserId &&
+      _cachedToken &&
+      _sessionBootstrapAllowed
+    ) {
+      return { generation: _authGeneration, userId: _cachedUserId, token: _cachedToken }
+    }
+    throw new Error('A sessão mudou enquanto a autenticação do Ops era carregada')
+  }
+
+  if (!_sessionBootstrapAllowed) {
+    throw new Error('A sessão foi encerrada enquanto a autenticação do Ops era carregada')
+  }
+
+  if (!session) {
+    return { generation: _authGeneration, userId: null, token: SUPABASE_KEY }
+  }
+
+  if (_cachedUserId && _cachedUserId !== session.user.id) {
+    throw new Error('A identidade da sessão mudou enquanto a autenticação do Ops era carregada')
+  }
+
+  if (!_cachedUserId) {
+    _authGeneration += 1
+    _refreshTokenAttempt = null
+  }
+  _cachedUserId = session.user.id
+  _cachedToken = session.access_token
+  return { generation: _authGeneration, userId: session.user.id, token: session.access_token }
+}
+
+async function refreshOpsToken(context: OpsAuthContext): Promise<string> {
+  assertCurrentAuthContext(context)
+  if (!context.userId) throw new Error('Não existe uma sessão autenticada para renovar')
+
+  const existing = _refreshTokenAttempt
+  if (
+    existing &&
+    existing.generation === context.generation &&
+    existing.userId === context.userId
+  ) {
+    return existing.promise
+  }
+
+  // Single-flight: status e tasks são buscados em paralelo e podem receber 401
+  // juntos. Uma única rotação evita disputar o mesmo refresh token.
+  const attemptGeneration = context.generation
+  const attemptUserId = context.userId
+  const refreshPromise = Promise.resolve()
+    .then(() => supabase.auth.refreshSession())
+    .then(({ data, error }) => {
+      if (error) throw new Error(opsErrorMessage(error))
+      const refreshedSession = data.session
+      if (!refreshedSession?.access_token) {
+        throw new Error('A sessão expirou e não retornou um novo token')
+      }
+      if (refreshedSession.user.id !== attemptUserId) {
+        throw new Error('A sessão foi renovada para outra identidade; a requisição foi cancelada')
+      }
+      if (
+        !_sessionBootstrapAllowed ||
+        _authGeneration !== attemptGeneration ||
+        _cachedUserId !== attemptUserId
+      ) {
+        throw new Error('A sessão mudou durante a renovação; o token antigo foi descartado')
+      }
+      _cachedToken = refreshedSession.access_token
+      return refreshedSession.access_token
+    })
+    .finally(() => {
+      _invalidatedRefreshGenerations.delete(attemptGeneration)
+      if (_refreshTokenAttempt?.promise === refreshPromise) _refreshTokenAttempt = null
+    })
+
+  _refreshTokenAttempt = {
+    generation: attemptGeneration,
+    userId: attemptUserId,
+    promise: refreshPromise,
+  }
+  return refreshPromise
+}
+
+async function executeOpsRequest(path: string, init: RequestInit, token: string): Promise<Response> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), OPS_REQUEST_TIMEOUT_MS)
+
+  try {
+    return await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      ...init,
+      headers: {
+        ...init.headers,
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${token}`,
+      },
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('Tempo limite de 15 segundos excedido na comunicação com o Ops')
+    }
+    throw new Error(`Falha na comunicação com o Ops: ${opsErrorMessage(error)}`)
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function requestOps(path: string, init: RequestInit = {}): Promise<OpsResponse> {
+  const context = await captureOpsAuthContext()
+  let response = await executeOpsRequest(path, init, context.token)
+  assertCurrentAuthContext(context)
+
+  if (response.status === 401) {
+    const firstError = await describeHttpError(response)
+
+    // Se outra requisição paralela já renovou o token, aproveita-o. Caso
+    // contrário, força refreshSession e repete esta requisição uma única vez.
+    const tokenRenewedInParallel = _cachedToken && _cachedToken !== context.token
+      ? _cachedToken
+      : null
+    if (!tokenRenewedInParallel && _cachedToken === context.token) _cachedToken = null
+
+    let retryToken: string
+    try {
+      retryToken = tokenRenewedInParallel ?? await refreshOpsToken(context)
+    } catch (error) {
+      throw new Error(`${firstError}. Não foi possível renovar a sessão: ${opsErrorMessage(error)}`)
+    }
+
+    assertCurrentAuthContext(context)
+    response = await executeOpsRequest(path, init, retryToken)
+    assertCurrentAuthContext(context)
+  }
+
+  if (!response.ok) throw new Error(await describeHttpError(response))
+  assertCurrentAuthContext(context)
+  return { response, context }
 }
 
 async function opsFetch<T>(path: string): Promise<T[]> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 5000)
-
-  // Usar token cacheado, ou buscar uma vez e cachear
-  if (!_cachedToken) {
-    try {
-      const { data } = await supabase.auth.getSession()
-      if (data.session?.access_token) {
-        _cachedToken = data.session.access_token
-      }
-    } catch {
-      // fallback para anon key
-    }
-  }
-
-  const token = _cachedToken ?? SUPABASE_KEY
-
-  try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`,
-      },
-      signal: controller.signal,
-      cache: 'no-store',
-    })
-
-    // Se receber 401, o token expirou — limpar cache e tentar de novo com anon key
-    if (response.status === 401) {
-      _cachedToken = null
-      throw new Error('Token expired')
-    }
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return await response.json() as T[]
-  } finally {
-    clearTimeout(timeoutId)
-  }
+  const { response, context } = await requestOps(path)
+  const rows = await response.json() as T[]
+  assertCurrentAuthContext(context)
+  return rows
 }
 
 async function opsPost<T>(table: string, body: Record<string, unknown>): Promise<T | null> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 5000)
-
-  if (!_cachedToken) {
-    try {
-      const { data } = await supabase.auth.getSession()
-      if (data.session?.access_token) {
-        _cachedToken = data.session.access_token
-      }
-    } catch {
-      // fallback para anon key
-    }
-  }
-
-  const token = _cachedToken ?? SUPABASE_KEY
-
-  try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-      method: 'POST',
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
-
-    if (response.status === 401) {
-      _cachedToken = null
-      throw new Error('Token expired')
-    }
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const rows = await response.json() as T[]
-    return rows[0] ?? null
-  } finally {
-    clearTimeout(timeoutId)
-  }
-}
-
-async function opsDelete(table: string, filter: string): Promise<{ count: number; error: string | null }> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 5000)
-
-  if (!_cachedToken) {
-    try {
-      const { data } = await supabase.auth.getSession()
-      if (data.session?.access_token) {
-        _cachedToken = data.session.access_token
-      }
-    } catch {
-      // fallback
-    }
-  }
-
-  const token = _cachedToken ?? SUPABASE_KEY
-
-  try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter}`, {
-      method: 'DELETE',
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`,
-        'Prefer': 'return=representation',
-      },
-      signal: controller.signal,
-      cache: 'no-store',
-    })
-
-    if (response.status === 401) {
-      _cachedToken = null
-      return { count: 0, error: 'Token expired' }
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      return { count: 0, error: `HTTP ${response.status} ${text}`.trim() }
-    }
-
-    const rows = await response.json().catch(() => [])
-    return { count: Array.isArray(rows) ? rows.length : 0, error: null }
-  } catch (err) {
-    return { count: 0, error: err instanceof Error ? err.message : 'Unknown error' }
-  } finally {
-    clearTimeout(timeoutId)
-  }
+  const { response, context } = await requestOps(table, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation',
+    },
+    body: JSON.stringify(body),
+  })
+  const rows = await response.json() as T[]
+  assertCurrentAuthContext(context)
+  return rows[0] ?? null
 }
 
 export function normalizeLabel(label: string): string {
@@ -206,7 +388,21 @@ export interface OpsClientLite {
   company: string | null
 }
 
-export const SYSTEM_SUFFIXES = new Set(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'])
+/** Sufixos legados que ainda podem existir no banco/ser usados pelo Ops. */
+export const WORKFLOW_SUFFIXES = new Set(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'])
+
+/** Apenas Lembrete e uma categoria nativa protegida no Notas. */
+export const IMMUTABLE_SUFFIXES = new Set(['TODO'])
+
+/**
+ * Colunas tecnicas/legadas que nao fazem mais parte da lista de categorias do
+ * Notas. DONE continua existindo temporariamente no banco porque a conclusao do
+ * Ops ainda depende dela; as demais sao migradas para TODO pela migration.
+ */
+export const HIDDEN_LEGACY_SUFFIXES = new Set(['IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'])
+
+/** Alias de compatibilidade para o casamento de status existente. */
+export const SYSTEM_SUFFIXES = WORKFLOW_SUFFIXES
 
 // ─── State shape ──────────────────────────────────────────────────────────────
 
@@ -369,6 +565,11 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       for (const row of statusData) {
         const suffix = getStatusBase(row.key)
 
+        // No Notas, somente Lembrete e uma categoria nativa visivel. As colunas
+        // legadas continuam reconhecidas para reconciliar tasks antigas, mas nao
+        // aparecem como categorias selecionaveis.
+        if (HIDDEN_LEGACY_SUFFIXES.has(suffix)) continue
+
         // Modo "Todos": agrega TODAS as colunas da equipe, deduplicadas por SUFIXO
         // (uma "Lembrete", uma "Em Progresso"...). O casamento tarefa↔seção no
         // TabBar/CategorySelect passa a ser por sufixo neste modo.
@@ -380,7 +581,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
           continue
         }
 
-        const isSystem = SYSTEM_SUFFIXES.has(suffix)
+        const isSystem = WORKFLOW_SUFFIXES.has(suffix)
 
         // Seções de sistema (workflow do Ops: TODO/IN_PROGRESS/…): UMA por SUFIXO,
         // sempre com a key/label/cor do PRÓPRIO usuário logado. Assim a coluna não
@@ -427,6 +628,10 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         const row = statusData.find((r) => r.key === sharedKey)
         if (!row) continue
         const suffix = getStatusBase(row.key)
+        // O segundo passe (categorias compartilhadas comigo) precisa respeitar
+        // a mesma ocultação do passe principal; caso contrário DONE e outros
+        // workflows legados voltariam à lista por meio de um share antigo.
+        if (HIDDEN_LEGACY_SUFFIXES.has(suffix)) continue
         const prefix = ownerPrefixOfKey(row.key)
         const ownerCleanedId = prefix ? prefix.slice(4, prefix.length - 1) : ''
         newSections.push({
@@ -582,10 +787,22 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
    * Cria uma seção (custom_status) no Mileto Ops, scoped ao usuário logado.
    */
   createSection: async (label: string, color: string): Promise<boolean> => {
-    const userId = useAuthStore.getState().user?.id
+    const auth = useAuthStore.getState()
+    const userId = auth.user?.id
     if (!userId) return false
 
+    // Criação de categoria altera o workflow do dono da key. Em "Todos" e na
+    // impersonação a tela não representa a conta real do token, então é leitura.
+    if (auth.viewAll || auth.viewingAs) return false
+
     const suffix = normalizeLabel(label)
+    // Keys vazias ficam impossíveis de selecionar. Sufixos do workflow e o nome
+    // visual reservado "Lembrete" não podem virar categorias custom invisíveis
+    // ou duplicar o único padrão do sistema.
+    if (!suffix || WORKFLOW_SUFFIXES.has(suffix) || suffix === 'LEMBRETE') {
+      console.warn('[ops] createSection: nome vazio ou reservado:', label)
+      return false
+    }
     // Key COMPLETA, sem truncar (o truncamento em 60 divergia do Ops para labels
     // longos). buildStatusKey é o helper canônico compartilhado.
     const key = buildStatusKey(userId, suffix)
@@ -596,7 +813,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
 
     const maxPosition = get().sections.length > 0
       ? Math.max(...get().sections.map((_, i) => i + 1))
-      : 5 // Depois das 5 system
+      : 0 // Depois do Lembrete (único default visível)
 
     const result = await opsPost<{ id: string }>('custom_statuses', {
       key,
@@ -624,9 +841,11 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
   updateSection: async (keySuffix: string, updates: { label?: string; color?: string }): Promise<boolean> => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) return false
-    if (SYSTEM_SUFFIXES.has(keySuffix)) return false
+    if (IMMUTABLE_SUFFIXES.has(keySuffix)) return false
 
-    const fullKey = buildStatusKey(userId, keySuffix)
+    const section = get().sections.find((sec) => sec.key_suffix === keySuffix)
+    if (!section || section.shared) return false
+    const fullKey = section.key
 
     const prev = get().sections
     set((s) => ({
@@ -654,101 +873,55 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
   },
 
   /**
-   * Deleta uma seção custom do usuário atual + todas as tasks do usuário
-   * nessa seção + as notas vinculadas a essas tasks.
-   * Não deleta seções pré-definidas (TODO, IN_PROGRESS, etc).
+   * Exclui uma categoria sem apagar conteúdo: move suas tasks/notas para o
+   * Lembrete do mesmo dono, remove compartilhamentos e só então remove a coluna.
    */
   deleteSection: async (keySuffix: string): Promise<{ success: boolean; error?: string }> => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) return { success: false, error: 'Usuário não autenticado' }
 
-    if (SYSTEM_SUFFIXES.has(keySuffix)) {
-      return { success: false, error: 'Não é possível excluir seções pré-definidas' }
+    if (IMMUTABLE_SUFFIXES.has(keySuffix)) {
+      return { success: false, error: 'Lembrete é a categoria padrão e não pode ser excluída' }
     }
 
-    // Modo "Todos" é só leitura — nunca apaga em massa tasks/notas da equipe.
+    // "Todos" é uma visão agregada; nunca altera categorias da equipe em massa.
     if (useAuthStore.getState().viewAll) {
       return { success: false, error: 'Modo "Todos" é somente leitura' }
     }
 
-    // Usa a KEY COMPLETA da seção exibida (não reconstrói por user.id) — em
-    // impersonação/visão a seção pode ser de outro dono, e reconstruir pela minha
-    // key apagaria a coluna errada (ou tasks de terceiros, sendo DONO/RLS liberada).
     const sec = get().sections.find((s) => s.key_suffix === keySuffix)
-    if (!sec) return { success: false, error: 'Seção não encontrada' }
+    if (!sec) return { success: false, error: 'Categoria não encontrada' }
     if (sec.shared) {
       return { success: false, error: 'Não é possível excluir uma categoria compartilhada por outra pessoa' }
     }
+
     const fullKey = sec.key
-
-    // 1. Tasks do usuário nessa seção
-    const tasksInSection = get().tasks.filter(
-      (t) => t.status === fullKey,
-    )
-    const taskIds = tasksInSection.map((t) => t.id)
-
-    // 2. Deletar notas vinculadas a essas tasks
-    if (taskIds.length > 0) {
-      const idList = taskIds.map((id) => `"${id}"`).join(',')
-      const { error: notesError } = await opsDelete('notes', `task_id=in.(${idList})`)
-      if (notesError) {
-        console.error('[ops] deleteSection: erro ao deletar notas:', notesError)
-        return { success: false, error: `Erro ao deletar notas: ${notesError}` }
-      }
-
-      // 3. Deletar as tasks
-      const { error: tasksError } = await opsDelete('tasks', `id=in.(${idList})`)
-      if (tasksError) {
-        console.error('[ops] deleteSection: erro ao deletar tasks:', tasksError)
-        return { success: false, error: `Erro ao deletar tasks: ${tasksError}` }
-      }
+    const tasksInSection = get().tasks.filter((task) => task.status === fullKey)
+    const { error } = await supabase.rpc('notas_delete_category', {
+      p_category_key: fullKey,
+    })
+    if (error) {
+      console.error('[ops] deleteSection:', error.message)
+      return { success: false, error: error.message }
     }
 
-    // 4. Deletar a custom_status
-    const { error: statusError } = await opsDelete('custom_statuses', `key=eq.${fullKey}`)
-    if (statusError) {
-      console.error('[ops] deleteSection: erro ao deletar seção:', statusError)
-      return { success: false, error: `Erro ao deletar seção: ${statusError}` }
-    }
+    const prefix = ownerPrefixOfKey(fullKey)
+    const reminderKey = prefix ? `${prefix}TODO` : buildStatusKey(userId, 'TODO')
 
-    // 5. Atualizar state local: remove seção, tasks, e abas abertas
-    set((s) => ({
-      sections: s.sections.filter((sec) => sec.key_suffix !== keySuffix),
-      tasks: s.tasks.filter((t) => t.status !== fullKey),
-      activeSectionId: s.activeSectionId === keySuffix ? null : s.activeSectionId,
-    }))
-
-    // 6. Fechar abas e remover notas locais
-    const notesStore = useNotesStore.getState()
-    const deletedNoteIds = new Set(
-      notesStore.notes
-        .filter((n) => n.task_id !== null && taskIds.includes(n.task_id))
-        .map((n) => n.id),
-    )
-
-    // Expande para incluir subnotas: as notas-raiz removidas acima têm task_id; as
-    // subnotas têm task_id=null e não entram no filtro por taskIds, mas foram
-    // apagadas no banco pelo ON DELETE CASCADE do parent_note_id. Replicamos esse
-    // cascade no estado local para não deixar subnota órfã. Ponto-fixo cobre N níveis.
-    let expandedDeletedIds = true
-    while (expandedDeletedIds) {
-      expandedDeletedIds = false
-      for (const note of notesStore.notes) {
-        if (note.parent_note_id && deletedNoteIds.has(note.parent_note_id) && !deletedNoteIds.has(note.id)) {
-          deletedNoteIds.add(note.id)
-          expandedDeletedIds = true
-        }
-      }
-    }
-
-    useNotesStore.setState((s) => ({
-      notes: s.notes.filter((n) => !deletedNoteIds.has(n.id)),
-      openTabs: s.openTabs.filter((id) => !deletedNoteIds.has(id)),
-      activeTabId: deletedNoteIds.has(s.activeTabId ?? '') ? null : s.activeTabId,
+    // A RPC preserva notes/subnotas e move suas tasks atomicamente para Lembrete.
+    set((state) => ({
+      sections: state.sections.filter((section) => section.key_suffix !== keySuffix),
+      tasks: state.tasks.map((task) =>
+        task.status === fullKey ? { ...task, status: reminderKey } : task,
+      ),
+      activeSectionId: state.activeSectionId === keySuffix ? 'TODO' : state.activeSectionId,
     }))
 
     get().scheduleOpsRefresh('section-deleted')
-    console.log(`[ops] deleteSection: "${keySuffix}" removida (${taskIds.length} tasks, ${deletedNoteIds.size} notas)`)
+    // A RPC também remove o vínculo pessoal dessa key. Recarrega o snapshot para
+    // não ressuscitar o grupo antigo caso a mesma categoria seja recriada agora.
+    void useCategoryGroupsStore.getState().loadGroups()
+    console.log(`[ops] deleteSection: "${keySuffix}" removida; ${tasksInSection.length} task(s) movida(s) para Lembrete`)
     return { success: true }
   },
 

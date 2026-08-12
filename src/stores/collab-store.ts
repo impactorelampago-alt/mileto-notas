@@ -4,6 +4,10 @@ import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwareness
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { colorForUser } from '../lib/collab-colors'
+import {
+  protectDraftAsCrdtConflict,
+  removeDraftIfContent,
+} from '../lib/local-drafts'
 
 /**
  * Co-edição em tempo real (Fase 2) — CRDT com Yjs.
@@ -145,53 +149,74 @@ function markdownFromUpdate(update: Uint8Array): string {
  * exatamente igual ao `target`. Se houve mudança remota, aplica apenas o trecho local
  * detectado, evitando substituir o documento remoto inteiro.
  */
-function applySimpleEdit(ytext: Y.Text, edit: PendingSimpleEdit): void {
+function applySimpleEdit(ytext: Y.Text, edit: PendingSimpleEdit): boolean {
   const current = ytext.toString()
-  if (current === edit.target) return
+  const { base, target } = edit
+  if (current === target) return false
 
   let start = 0
-  const common = Math.min(edit.base.length, edit.target.length)
-  while (start < common && edit.base[start] === edit.target[start]) start++
+  const common = Math.min(base.length, target.length)
+  while (start < common && base[start] === target[start]) start++
 
-  let baseEnd = edit.base.length
-  let targetEnd = edit.target.length
+  let baseEnd = base.length
+  let targetEnd = target.length
   while (
     baseEnd > start &&
     targetEnd > start &&
-    edit.base[baseEnd - 1] === edit.target[targetEnd - 1]
+    base[baseEnd - 1] === target[targetEnd - 1]
   ) {
     baseEnd--
     targetEnd--
   }
 
-  const removed = edit.base.slice(start, baseEnd)
-  const inserted = edit.target.slice(start, targetEnd)
+  const inserted = target.slice(start, targetEnd)
+  const removedLength = baseEnd - start
 
   // Documento sem mudança remota: substituição exata e mínima.
-  if (current === edit.base) {
+  if (current === base) {
     ytext.doc?.transact(() => {
-      if (removed.length > 0) ytext.delete(start, removed.length)
+      if (removedLength > 0) ytext.delete(start, removedLength)
       if (inserted) ytext.insert(start, inserted)
     })
-    return
+    return true
   }
 
-  // Documento remoto diferente: localiza com segurança o trecho removido. Se não
-  // houver correspondência inequívoca, preserva o remoto e aplica só a inserção.
-  let removeAt = -1
-  if (removed.length > 0) {
-    if (current.slice(start, start + removed.length) === removed) {
-      removeAt = start
-    } else {
-      const first = current.indexOf(removed)
-      if (first >= 0 && first === current.lastIndexOf(removed)) removeAt = first
+  let remoteStart = 0
+  const remoteCommon = Math.min(base.length, current.length)
+  while (remoteStart < remoteCommon && base[remoteStart] === current[remoteStart]) remoteStart++
+
+  let baseRemoteEnd = base.length
+  let currentEnd = current.length
+  while (
+    baseRemoteEnd > remoteStart &&
+    currentEnd > remoteStart &&
+    base[baseRemoteEnd - 1] === current[currentEnd - 1]
+  ) {
+    baseRemoteEnd--
+    currentEnd--
+  }
+
+  if (baseEnd <= remoteStart) {
+    ytext.doc?.transact(() => {
+      if (removedLength > 0) ytext.delete(start, removedLength)
+      if (inserted) ytext.insert(start, inserted)
+    })
+    return true
+  }
+
+  if (start >= baseRemoteEnd) {
+    const shiftedStart = start + (current.length - base.length)
+    if (shiftedStart >= 0 && shiftedStart + removedLength <= current.length) {
+      ytext.doc?.transact(() => {
+        if (removedLength > 0) ytext.delete(shiftedStart, removedLength)
+        if (inserted) ytext.insert(shiftedStart, inserted)
+      })
+      return true
     }
   }
-  const insertAt = removeAt >= 0 ? removeAt : Math.min(start, current.length)
-  ytext.doc?.transact(() => {
-    if (removeAt >= 0) ytext.delete(removeAt, removed.length)
-    if (inserted) ytext.insert(insertAt, inserted)
-  })
+
+  console.warn('[collab] applySimpleEdit: mudança conflita com o remoto; adiada (segue em notes.content)')
+  return false
 }
 
 /**
@@ -231,11 +256,45 @@ async function persistState(noteId: string, mine: Uint8Array): Promise<Uint8Arra
   throw new Error('[collab] persistState: concorrência excessiva após 5 tentativas')
 }
 
+async function seedState(noteId: string, seed: string): Promise<Uint8Array> {
+  const seedDoc = new Y.Doc()
+  seedDoc.getText('content').insert(0, seed ?? '')
+  const update = Y.encodeStateAsUpdate(seedDoc)
+  seedDoc.destroy()
+  const { error } = await supabase
+    .from('note_yjs')
+    .upsert(
+      { note_id: noteId, state: u8ToB64(update), updated_at: nextWriteTimestamp() },
+      { onConflict: 'note_id', ignoreDuplicates: true },
+    )
+  if (error) throw new Error(`[collab] seed: ${error.message}`)
+  const stored = await loadState(noteId)
+  return stored ? stored.update : update
+}
+
+function takePendingSimpleEdit(noteId: string, version?: number): PendingSimpleEdit | null {
+  const pending = _pendingSimpleEdits.get(noteId)
+  if (!pending || (version !== undefined && pending.version !== version)) return null
+  _pendingSimpleEdits.delete(noteId)
+  return pending
+}
+
+async function restorePendingSimpleEdit(noteId: string, edit: PendingSimpleEdit): Promise<boolean> {
+  const current = _pendingSimpleEdits.get(noteId)
+  const preserved = !current || current.version <= edit.version ? edit : current
+  if (preserved === edit) _pendingSimpleEdits.set(noteId, edit)
+  // Persiste também a BASE do merge. Sem ela, depois de reiniciar o app o rascunho
+  // teria apenas o target e não seria possível reaplicar com segurança a edição
+  // sobre o documento Yjs que divergiu. O helper preserva um título local existente.
+  return protectDraftAsCrdtConflict(noteId, preserved.target, preserved.base)
+}
+
 function enqueueFlush(
   noteId: string,
   mine: Uint8Array,
   onSnapshot: SnapshotHandler | null,
   liveDoc?: Y.Doc,
+  onPersisted?: (markdown: string) => Promise<void> | void,
 ): Promise<void> {
   const previous = _flushQueues.get(noteId) ?? Promise.resolve()
   const current = previous
@@ -248,7 +307,9 @@ function enqueueFlush(
       // Se esta ainda for a sessão viva, incorpora updates remotos que estavam apenas
       // no banco. O snapshot usa EXATAMENTE o estado confirmado, não edições posteriores.
       if (liveDoc && _i.session?.doc === liveDoc) Y.applyUpdate(liveDoc, merged, 'load')
-      if (onSnapshot) await onSnapshot(noteId, markdownFromUpdate(merged), true)
+      const persistedMarkdown = markdownFromUpdate(merged)
+      if (onSnapshot) await onSnapshot(noteId, persistedMarkdown, true)
+      if (onPersisted) await onPersisted(persistedMarkdown)
     })
 
   _flushQueues.set(noteId, current)
@@ -313,22 +374,37 @@ function flushAndTeardownCurrent(): Promise<void> {
  * reaparecer antigo na próxima abertura.
  */
 async function flushPendingSimpleEdit(noteId: string, edit: PendingSimpleEdit): Promise<void> {
-  await waitForFlush(noteId)
-  const stored = await loadState(noteId)
-  const doc = new Y.Doc()
+  if (!takePendingSimpleEdit(noteId, edit.version)) return
   try {
-    const ytext = doc.getText('content')
-    if (stored) {
-      Y.applyUpdate(doc, stored.update, 'load')
-    } else {
-      ytext.insert(0, edit.base)
+    await waitForFlush(noteId)
+    const stored = await loadState(noteId)
+    const doc = new Y.Doc()
+    try {
+      if (stored) {
+        Y.applyUpdate(doc, stored.update, 'load')
+      } else {
+        Y.applyUpdate(doc, await seedState(noteId, edit.base), 'load')
+      }
+      const ytext = doc.getText('content')
+      if (applySimpleEdit(ytext, edit)) {
+        await enqueueFlush(
+          noteId,
+          Y.encodeStateAsUpdate(doc),
+          null,
+          undefined,
+          async () => { await removeDraftIfContent(noteId, edit.target) },
+        )
+      } else if (ytext.toString() === edit.target) {
+        await removeDraftIfContent(noteId, edit.target)
+      } else {
+        await restorePendingSimpleEdit(noteId, edit)
+      }
+    } finally {
+      doc.destroy()
     }
-    applySimpleEdit(ytext, edit)
-    await enqueueFlush(noteId, Y.encodeStateAsUpdate(doc), null)
-    const current = _pendingSimpleEdits.get(noteId)
-    if (current?.version === edit.version) _pendingSimpleEdits.delete(noteId)
-  } finally {
-    doc.destroy()
+  } catch (error) {
+    await restorePendingSimpleEdit(noteId, edit)
+    throw error
   }
 }
 
@@ -372,16 +448,12 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
         const persisted = await loadState(noteId)
         if (persisted) {
           Y.applyUpdate(doc, persisted.update, 'load')
-        } else if (!editable) {
+        } else if (editable) {
+          Y.applyUpdate(doc, await seedState(noteId, seed), 'load')
+        } else {
           undoManager.destroy(); awareness.destroy(); doc.destroy()
           if (requestId === _openGeneration) set({ session: null, collabPeers: [], loading: false })
           return
-        } else {
-          const seedDoc = new Y.Doc()
-          seedDoc.getText('content').insert(0, seed ?? '')
-          const canonical = await persistState(noteId, Y.encodeStateAsUpdate(seedDoc))
-          seedDoc.destroy()
-          Y.applyUpdate(doc, canonical, 'load')
         }
       } catch (error) {
         console.warn('[collab] open/load falhou — modo simples:', error)
@@ -390,20 +462,42 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
         return
       }
 
-      const staged = editable ? _pendingSimpleEdits.get(noteId) : undefined
-      if (staged) applySimpleEdit(ytext, staged)
+      const staged = editable ? takePendingSimpleEdit(noteId) : undefined
+      const stagedApplied = staged ? applySimpleEdit(ytext, staged) : false
+      const stagedConflict = !!staged && !stagedApplied && ytext.toString() !== staged.target
+
+      if (stagedConflict) {
+        await restorePendingSimpleEdit(noteId, staged)
+        console.warn('[collab] open: conflito preservado como rascunho; mantendo modo simples')
+        undoManager.destroy(); awareness.destroy(); doc.destroy()
+        if (requestId === _openGeneration) {
+          set({ session: null, collabPeers: [], loading: false })
+        }
+        return
+      }
+      // `current === target`: o CRDT já contém a edição. Remove somente o
+      // rascunho que ainda corresponde a este target, nunca um texto digitado
+      // enquanto a abertura assíncrona estava em voo.
+      if (staged && !stagedApplied) void removeDraftIfContent(noteId, staged.target)
 
       // A nota deixou de ser ativa enquanto o SELECT estava em voo. Ainda salvamos o
       // buffer da nota CORRETA, mas ela jamais vira a sessão global atual.
       if (requestId !== _openGeneration) {
         try {
-          if (staged) {
-            await enqueueFlush(noteId, Y.encodeStateAsUpdate(doc), onSnapshot)
-            const current = _pendingSimpleEdits.get(noteId)
-            if (current?.version === staged.version) _pendingSimpleEdits.delete(noteId)
+          if (stagedApplied) {
+            await enqueueFlush(
+              noteId,
+              Y.encodeStateAsUpdate(doc),
+              onSnapshot,
+              undefined,
+              async (persistedMarkdown) => {
+                await removeDraftIfContent(noteId, persistedMarkdown)
+              },
+            )
           }
         } catch (error) {
           console.warn('[collab] flush de abertura cancelada:', error)
+          if (staged) await restorePendingSimpleEdit(noteId, staged)
         } finally {
           undoManager.destroy(); awareness.destroy(); doc.destroy()
         }
@@ -479,13 +573,17 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       const queueCurrentFlush = (): void => {
         if (!_i.dirty || !editable || _i.session?.doc !== doc) return
         _i.dirty = false
-        const stagedAtFlush = _pendingSimpleEdits.get(noteId)
-        void enqueueFlush(noteId, Y.encodeStateAsUpdate(doc), onSnapshot, doc).then(
-          () => {
-            if (stagedAtFlush && _pendingSimpleEdits.get(noteId)?.version === stagedAtFlush.version) {
-              _pendingSimpleEdits.delete(noteId)
-            }
+        const encoded = Y.encodeStateAsUpdate(doc)
+        void enqueueFlush(
+          noteId,
+          encoded,
+          onSnapshot,
+          doc,
+          async (persistedMarkdown) => {
+            await removeDraftIfContent(noteId, persistedMarkdown)
           },
+        ).then(
+          undefined,
           (error: unknown) => {
             console.warn('[collab] persist:', error)
             if (_i.session?.doc === doc) _i.dirty = true
@@ -524,10 +622,10 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       _i.heartbeat = heartbeat
       _i.onSnapshot = onSnapshot
       _i.editable = editable
-      _i.dirty = !!staged
+      _i.dirty = stagedApplied
       set({ session: _i.session, loading: false })
       refreshPeers()
-      if (staged) queueCurrentFlush()
+      if (stagedApplied) queueCurrentFlush()
     }
 
     const task = _openChain.catch(() => {}).then(run)
@@ -537,17 +635,27 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
 
   stageSimpleEdit: (noteId, base, target) => {
     const live = _i.session?.noteId === noteId && _i.editable ? _i.session : null
+    if (live) {
+      const edit: PendingSimpleEdit = {
+        base: live.ytext.toString(),
+        target,
+        version: ++_pendingVersion,
+      }
+      _pendingSimpleEdits.delete(noteId)
+      if (applySimpleEdit(live.ytext, edit)) {
+        _i.dirty = true
+      } else if (live.ytext.toString() !== target) {
+        void restorePendingSimpleEdit(noteId, edit)
+        void get().close()
+      }
+      return
+    }
     const previous = _pendingSimpleEdits.get(noteId)
-    const edit: PendingSimpleEdit = {
-      base: live ? live.ytext.toString() : (previous?.base ?? base),
+    _pendingSimpleEdits.set(noteId, {
+      base: previous?.base ?? base,
       target,
       version: ++_pendingVersion,
-    }
-    _pendingSimpleEdits.set(noteId, edit)
-    if (live) {
-      applySimpleEdit(live.ytext, edit)
-      _i.dirty = true
-    }
+    })
   },
 
   resubscribe: () => {

@@ -19,6 +19,15 @@ export interface NoteDraft {
   content: string
   title: string
   savedAt: string
+  /**
+   * Edição que encontrou um conflito sobreposto com o documento Yjs canônico.
+   *
+   * Enquanto este marcador existir, o flush REST comum NÃO pode consumir o
+   * rascunho: gravar apenas `notes.content` sem alinhar `note_yjs` faria o CRDT
+   * antigo reaparecer na abertura seguinte. `base` é necessária para reaplicar a
+   * alteração local por merge de três vias mesmo depois de reiniciar o app.
+   */
+  crdtConflict?: { base: string }
 }
 
 export interface SessionState {
@@ -68,11 +77,47 @@ export async function saveDraft(noteId: string, draft: NoteDraft): Promise<void>
       const store = storage()
       if (!store) return
       const drafts = await readDraftsDirect()
-      drafts[noteId] = draft
+      const existingConflict = drafts[noteId]?.crdtConflict
+      // Um save REST comum não tem autoridade para desproteger um conflito CRDT.
+      // O marcador só sai quando o collab-store confirma o estado em `note_yjs` e
+      // remove explicitamente o rascunho correspondente.
+      drafts[noteId] = existingConflict && !draft.crdtConflict
+        ? { ...draft, crdtConflict: existingConflict }
+        : draft
       await store.set(DRAFTS_KEY, JSON.stringify(drafts))
     })
   } catch {
     // O backup local nunca pode quebrar o app — falha em silêncio.
+  }
+}
+
+/**
+ * Protege um texto conflitante sem apagar um título local que já estivesse salvo.
+ * A operação é atômica na mesma fila de read-modify-write dos demais rascunhos.
+ */
+export async function protectDraftAsCrdtConflict(
+  noteId: string,
+  content: string,
+  base: string,
+): Promise<boolean> {
+  try {
+    return await enqueueDraftOperation(async () => {
+      const store = storage()
+      if (!store) return false
+      const drafts = await readDraftsDirect()
+      const existing = drafts[noteId]
+      drafts[noteId] = {
+        content,
+        title: existing?.title ?? '',
+        savedAt: new Date().toISOString(),
+        crdtConflict: { base },
+      }
+      await store.set(DRAFTS_KEY, JSON.stringify(drafts))
+      return true
+    })
+  } catch {
+    // O backup local nunca pode quebrar o editor.
+    return false
   }
 }
 
@@ -89,6 +134,54 @@ export async function removeDraft(noteId: string): Promise<void> {
     })
   } catch {
     // ignore
+  }
+}
+
+/**
+ * Remoção usada pelo fluxo REST comum. Retorna `false` e preserva o arquivo
+ * quando o texto ainda depende de alinhamento CRDT.
+ */
+export async function removeDraftUnlessCrdtConflict(noteId: string): Promise<boolean> {
+  try {
+    return await enqueueDraftOperation(async () => {
+      const store = storage()
+      if (!store) return false
+      const drafts = await readDraftsDirect()
+      const draft = drafts[noteId]
+      if (!draft) return true
+      if (draft.crdtConflict) return false
+      delete drafts[noteId]
+      await store.set(DRAFTS_KEY, JSON.stringify(drafts))
+      return true
+    })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * O collab-store usa esta variante depois de persistir `note_yjs`. A comparação
+ * evita que um flush antigo apague um rascunho mais novo criado enquanto a rede
+ * estava em voo.
+ */
+export async function removeDraftIfContent(
+  noteId: string,
+  expectedContent: string,
+): Promise<boolean> {
+  try {
+    return await enqueueDraftOperation(async () => {
+      const store = storage()
+      if (!store) return false
+      const drafts = await readDraftsDirect()
+      const draft = drafts[noteId]
+      if (!draft) return true
+      if (draft.content !== expectedContent) return false
+      delete drafts[noteId]
+      await store.set(DRAFTS_KEY, JSON.stringify(drafts))
+      return true
+    })
+  } catch {
+    return false
   }
 }
 

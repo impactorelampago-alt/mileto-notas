@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, Pin, Plus, Users, X, LogOut } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
-import { useOpsStore, SYSTEM_SUFFIXES } from '../../stores/ops-store'
+import { useOpsStore, SYSTEM_SUFFIXES, HIDDEN_LEGACY_SUFFIXES } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useSharingStore } from '../../stores/sharing-store'
@@ -134,6 +134,12 @@ export default function TabBar() {
           (SYSTEM_SUFFIXES.has(getStatusBase(origin))
             ? sections.find((item) => item.key_suffix === getStatusBase(origin))
             : undefined)
+      }
+      // Categorias legadas deixaram de ser exibidas. Enquanto o banco ainda
+      // conclui via _DONE (ou antes da migration de limpeza), mantenha as notas
+      // acessíveis em Lembrete em vez de fazê-las desaparecer da barra.
+      if (!section && HIDDEN_LEGACY_SUFFIXES.has(getStatusBase(task.status))) {
+        section = sections.find((item) => item.key_suffix === 'TODO')
       }
       if (section) map.set(task.id, section.key_suffix)
     }

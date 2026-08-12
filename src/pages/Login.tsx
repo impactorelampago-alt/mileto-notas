@@ -1,22 +1,32 @@
 import { useState, useRef, useEffect } from 'react'
 import type { FormEvent } from 'react'
-import { Mail, Lock, Eye, EyeOff, Minus, Maximize2, X } from 'lucide-react'
+import { Mail, Lock, Eye, EyeOff, Minus, Maximize2, X, ShieldCheck, ArrowLeft } from 'lucide-react'
 import { useAuthStore } from '../stores/auth-store'
 import Particles from '../components/ui/Particles'
 
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isPending, setIsPending] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
 
   const signIn = useAuthStore((state) => state.signIn)
+  const verifyMfa = useAuthStore((state) => state.verifyMfa)
+  const cancelMfa = useAuthStore((state) => state.cancelMfa)
+  const mfaRequired = useAuthStore((state) => state.mfaRequired)
+  const authError = useAuthStore((state) => state.authError)
   const emailRef = useRef<HTMLInputElement>(null)
+  const mfaCodeRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     emailRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    if (mfaRequired) mfaCodeRef.current?.focus()
+  }, [mfaRequired])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -32,10 +42,46 @@ export default function Login() {
     const result = await signIn(email.trim(), password)
     setIsPending(false)
 
+    if (result.mfaRequired) {
+      setPassword('')
+      setMfaCode('')
+    }
+    if (result.error) setError(result.error)
+  }
+
+  const handleMfaSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (isPending) return
+    setError(null)
+
+    if (!/^\d{6}$/.test(mfaCode)) {
+      setError('Digite os 6 dígitos do aplicativo autenticador.')
+      return
+    }
+
+    setIsPending(true)
+    const result = await verifyMfa(mfaCode)
+    setIsPending(false)
+
     if (result.error) {
       setError(result.error)
+      setMfaCode('')
+      requestAnimationFrame(() => mfaCodeRef.current?.focus())
     }
   }
+
+  const handleCancelMfa = async () => {
+    if (isPending) return
+    setIsPending(true)
+    setError(null)
+    await cancelMfa()
+    setMfaCode('')
+    setPassword('')
+    setIsPending(false)
+    requestAnimationFrame(() => emailRef.current?.focus())
+  }
+
+  const displayedError = error ?? authError
 
   return (
     <div
@@ -101,19 +147,70 @@ export default function Login() {
               className="font-semibold text-zinc-100"
               style={{ fontSize: '24px' }}
             >
-              Ops Notas
+              {mfaRequired ? 'Verificação em duas etapas' : 'Ops Notas'}
             </h1>
             <p className="mt-1 text-zinc-500" style={{ fontSize: '14px' }}>
-              Entre com sua conta
+              {mfaRequired ? 'Digite o código de 6 dígitos' : 'Entre com sua conta'}
             </p>
             <p className="mt-1 text-zinc-600" style={{ fontSize: '13px' }}>
-              Bloco de notas colaborativo da sua equipe
+              {mfaRequired
+                ? 'Use o código atual do seu aplicativo autenticador'
+                : 'Bloco de notas colaborativo da sua equipe'}
             </p>
           </div>
         </div>
 
         {/* Formulário */}
-        <form onSubmit={handleSubmit} noValidate>
+        <form onSubmit={mfaRequired ? handleMfaSubmit : handleSubmit} noValidate>
+          {mfaRequired ? (
+            <div style={{ marginBottom: '40px' }}>
+              <label
+                htmlFor="mfa-code"
+                className="mb-1.5 block font-medium text-zinc-400"
+                style={{ fontSize: '13px' }}
+              >
+                Código de verificação
+              </label>
+              <div className="relative">
+                <ShieldCheck
+                  size={17}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500"
+                />
+                <input
+                  ref={mfaCodeRef}
+                  id="mfa-code"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="one-time-code"
+                  value={mfaCode}
+                  onChange={(e) => {
+                    setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    setError(null)
+                  }}
+                  disabled={isPending}
+                  placeholder="000000"
+                  aria-describedby="mfa-code-help"
+                  className="w-full outline-none transition-colors duration-150 focus:border-emerald-500 disabled:opacity-50 placeholder:text-zinc-600 text-zinc-100"
+                  style={{
+                    backgroundColor: '#27272a',
+                    border: '1px solid #3f3f46',
+                    borderRadius: '8px',
+                    padding: '12px 40px',
+                    fontSize: '20px',
+                    fontVariantNumeric: 'tabular-nums',
+                    letterSpacing: '0.35em',
+                    textAlign: 'center',
+                    width: '100%',
+                  }}
+                />
+              </div>
+              <p id="mfa-code-help" className="mt-2 text-zinc-600" style={{ fontSize: '12px' }}>
+                O código muda a cada 30 segundos.
+              </p>
+            </div>
+          ) : (
+            <>
           {/* Email */}
           <div className="mb-4">
             <label
@@ -195,18 +292,20 @@ export default function Login() {
               </button>
             </div>
           </div>
+            </>
+          )}
 
           {/* Mensagem de erro */}
-          {error && (
+          {displayedError && (
             <p className="mb-4 text-red-400" style={{ fontSize: '13px' }}>
-              {error}
+              {displayedError}
             </p>
           )}
 
           {/* Botão */}
           <button
             type="submit"
-            disabled={isPending}
+            disabled={isPending || (mfaRequired && mfaCode.length !== 6)}
             className="flex w-full items-center justify-center rounded-lg font-medium text-white transition-all duration-150 hover:bg-emerald-500 hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:scale-100"
             style={{
               height: '44px',
@@ -215,8 +314,23 @@ export default function Login() {
               boxShadow: isPending ? 'none' : '0 4px 24px rgba(16,185,129,0.2)',
             }}
           >
-            {isPending ? 'Entrando...' : 'Entrar'}
+            {isPending
+              ? (mfaRequired ? 'Verificando...' : 'Entrando...')
+              : (mfaRequired ? 'Confirmar código' : 'Entrar')}
           </button>
+
+          {mfaRequired && (
+            <button
+              type="button"
+              onClick={handleCancelMfa}
+              disabled={isPending}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg text-zinc-500 transition-colors duration-150 hover:bg-zinc-800 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ height: '40px', fontSize: '13px' }}
+            >
+              <ArrowLeft size={15} />
+              Voltar para o login
+            </button>
+          )}
         </form>
 
         {/* Rodapé */}

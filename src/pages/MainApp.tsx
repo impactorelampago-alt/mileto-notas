@@ -3,7 +3,7 @@ import { useAuthStore } from '../stores/auth-store'
 import { useNotesStore } from '../stores/notes-store'
 import { useCategoriesStore } from '../stores/categories-store'
 import { useUIStore } from '../stores/ui-store'
-import { useOpsStore } from '../stores/ops-store'
+import { useOpsStore, HIDDEN_LEGACY_SUFFIXES } from '../stores/ops-store'
 import Titlebar from '../components/layout/Titlebar'
 import TabBar from '../components/layout/TabBar'
 import StatusBar from '../components/layout/StatusBar'
@@ -23,17 +23,25 @@ import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
 import { useWorkspacePresenceStore } from '../stores/workspace-presence-store'
 import { useCollabStore } from '../stores/collab-store'
-import { loadDrafts, removeDraft, loadSession, saveSession } from '../lib/local-drafts'
+import { useCategoryGroupsStore } from '../stores/category-groups-store'
+import {
+  loadDrafts,
+  removeDraftUnlessCrdtConflict,
+  loadSession,
+  saveSession,
+} from '../lib/local-drafts'
 import { DEFAULT_SECTION_SUFFIX } from '../lib/sections'
-import { isStatusSuffix } from '../lib/status-keys'
+import { getStatusBase } from '../lib/status-keys'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const user = useAuthStore((s) => s.user)
   const profile = useAuthStore((s) => s.profile)
+  const effectiveUserId = useAuthStore((s) => s.viewingAs?.id ?? s.user?.id ?? null)
   const loadNotes = useNotesStore((s) => s.loadNotes)
   const updateNote = useNotesStore((s) => s.updateNote)
   const activeTabId = useNotesStore((s) => s.activeTabId)
+  const completedOrigins = useNotesStore((s) => s.completedOrigins)
   const openTabs = useNotesStore((s) => s.openTabs)
   const subscribeToNote = useNotesStore((s) => s.subscribeToNote)
   const unsubscribeFromNote = useNotesStore((s) => s.unsubscribeFromNote)
@@ -72,6 +80,8 @@ export default function MainApp() {
   const hasLoadedOnce = useNotesStore((s) => s.hasLoadedOnce)
   const createNote = useNotesStore((s) => s.createNote)
   const { loadOpsData, subscribeToOpsChanges, unsubscribeFromOpsChanges, setupAutoReconciliation } = useOpsStore()
+  const loadCategoryGroups = useCategoryGroupsStore((s) => s.loadGroups)
+  const clearCategoryGroups = useCategoryGroupsStore((s) => s.clear)
 
   const [hasInitialized, setHasInitialized] = useState(false)
 
@@ -93,6 +103,16 @@ export default function MainApp() {
     })()
 
   }, [isAuthenticated, loadNotes, loadCategories, loadNotesWithCollaborators, loadTeamProfiles, loadShares])
+
+  // Grupos/pastas são preferências pessoais sincronizadas por conta efetiva.
+  // Na impersonação podem ser lidos, mas só a própria conta consegue alterá-los.
+  useEffect(() => {
+    if (!isAuthenticated || !effectiveUserId) {
+      clearCategoryGroups()
+      return
+    }
+    void loadCategoryGroups()
+  }, [isAuthenticated, effectiveUserId, loadCategoryGroups, clearCategoryGroups])
 
   // Ops sync: load data + Realtime subscription + auto-reconciliation on focus
   useEffect(() => {
@@ -188,19 +208,40 @@ export default function MainApp() {
         for (const [id, draft] of Object.entries(drafts)) {
           const note = useNotesStore.getState().notes.find((n) => n.id === id)
           if (!note) continue
-          if (draft.content !== note.content || draft.title !== note.title) {
-            if (draft.content !== note.content) {
-              useCollabStore.getState().stageSimpleEdit(id, note.content, draft.content)
-            }
-            useNotesStore.setState((s) => ({
-              notes: s.notes.map((n) =>
-                n.id === id ? { ...n, content: draft.content, title: draft.title } : n,
+
+          const restoredTitle = draft.title || note.title
+          if (draft.crdtConflict) {
+            // Conflito sobreposto: restaura na memória e entrega BASE+TARGET ao
+            // collab-store. NÃO chama updateNote aqui: isso alinharia apenas
+            // notes/tasks e permitiria ao note_yjs antigo vencer no próximo boot.
+            useCollabStore.getState().stageSimpleEdit(
+              id,
+              draft.crdtConflict.base,
+              draft.content,
+            )
+            useNotesStore.setState((state) => ({
+              notes: state.notes.map((current) =>
+                current.id === id
+                  ? { ...current, content: draft.content, title: restoredTitle }
+                  : current,
               ),
             }))
-            await useNotesStore.getState().updateNote(id, { content: draft.content, title: draft.title })
-          } else {
-            await removeDraft(id)
+            continue
           }
+
+          if (draft.content === note.content && draft.title === note.title) {
+            await removeDraftUnlessCrdtConflict(id)
+            continue
+          }
+          if (draft.content !== note.content) {
+            useCollabStore.getState().stageSimpleEdit(id, note.content, draft.content)
+          }
+          useNotesStore.setState((s) => ({
+            notes: s.notes.map((n) =>
+              n.id === id ? { ...n, content: draft.content, title: restoredTitle } : n,
+            ),
+          }))
+          await useNotesStore.getState().updateNote(id, { content: draft.content, title: restoredTitle })
         }
       } catch (err) {
         console.error('[restore] Falha ao restaurar rascunhos locais:', err)
@@ -218,7 +259,19 @@ export default function MainApp() {
         if (!taskId) return null
         const task = tasksNow.find((t) => t.id === taskId)
         if (!task) return null
-        return sectionsNow.find((s) => isStatusSuffix(task.status, s.key_suffix))?.key_suffix ?? null
+        const exact = sectionsNow.find((section) => section.key === task.status)
+        if (exact) return exact.key_suffix
+        const base = getStatusBase(task.status)
+        if (base === 'DONE') {
+          const origin = completedOrigins[task.id]
+          if (origin) {
+            const originSection = sectionsNow.find((section) => section.key === origin)
+            if (originSection) return originSection.key_suffix
+          }
+        }
+        const bySuffix = sectionsNow.find((section) => section.key_suffix === base)
+        if (bySuffix) return bySuffix.key_suffix
+        return HIDDEN_LEGACY_SUFFIXES.has(base) ? 'TODO' : null
       }
       const notesInSection = latestNotes.filter((n) => suffixOfNote(n.task_id) === targetSection)
 

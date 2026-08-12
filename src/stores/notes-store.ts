@@ -9,7 +9,12 @@ import { normalizePriority } from '../lib/note-priority'
 import { findMentions } from '../lib/mentions-core'
 import { doneKeyForStatus } from '../lib/sections'
 import { isDoneStatus, buildStatusKey } from '../lib/status-keys'
-import { saveDraft, removeDraft, loadDrafts } from '../lib/local-drafts'
+import {
+  saveDraft,
+  removeDraft,
+  removeDraftUnlessCrdtConflict,
+  loadDrafts,
+} from '../lib/local-drafts'
 import { loadCompletedOrigins, persistCompletedOrigins } from '../lib/completed-origins'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
@@ -35,6 +40,9 @@ function invalidateNotesToken(): void {
 }
 
 let _deletionInProgress = false
+let _noteRealtimeRetryTimer: ReturnType<typeof setTimeout> | null = null
+let _noteRealtimeRetryAttempt = 0
+let _noteRealtimeNoteId: string | null = null
 // Menções já notificadas nesta sessão, por nota (evita re-chamar o RPC a cada save;
 // o RPC também deduplica no banco). noteId -> set de userIds.
 const _notifiedMentions = new Map<string, Set<string>>()
@@ -115,6 +123,43 @@ function inheritSubnoteSharedFlags(notes: Note[]): void {
       n.shared_permission = perm
     }
   }
+}
+
+/**
+ * Anexa as mesmas flags de acesso usadas por loadNotes a uma árvore buscada por
+ * deep-link/fetchNoteById. Sem isto, um destinatário EDIT podia abrir a nota pelo
+ * sino e cair em somente-leitura até o próximo refresh global.
+ */
+function applyFetchedSharedFlags(
+  notes: Note[],
+  userId: string | undefined,
+  fetchedTaskStatus?: { id: string; status: string } | null,
+): void {
+  const auth = useAuthStore.getState()
+  if (!userId || auth.viewAll || auth.viewingAs) return
+
+  const shares = useSharingStore.getState()
+  const taskStatusById = new Map(useOpsStore.getState().tasks.map((task) => [task.id, task.status]))
+  if (fetchedTaskStatus) taskStatusById.set(fetchedTaskStatus.id, fetchedTaskStatus.status)
+  const byId = new Map(notes.map((note) => [note.id, note]))
+  const myPrefix = `USR_${userId.replace(/-/g, '')}_`
+
+  for (const note of notes) {
+    if (note.creator_id === userId) continue
+    let permission: NotePermission | undefined = shares.sharedWithMeNotes[note.id]
+    const root = note.parent_note_id ? byId.get(note.parent_note_id) : note
+    const taskId = note.task_id ?? root?.task_id ?? null
+    const status = taskId ? taskStatusById.get(taskId) : undefined
+    if (!permission && status) {
+      permission = shares.sharedWithMeCategories[status]
+        ?? (status.startsWith(myPrefix) ? 'EDIT' : undefined)
+    }
+    if (permission) {
+      note.is_shared_with_me = true
+      note.shared_permission = permission
+    }
+  }
+  inheritSubnoteSharedFlags(notes)
 }
 
 /**
@@ -1241,13 +1286,17 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       const contentOk = updates.content !== undefined ? saved?.content === updates.content : !wasPendingBefore
       const titleOk = updates.title !== undefined ? saved?.title === updates.title : !wasPendingBefore
       if (saved && (updates.content !== undefined || updates.title !== undefined) && contentOk && titleOk) {
-        clearPendingDraft(id) // save confirmado: já não há edição local a proteger
-        // Aguarda o removeDraft GRAVAR antes de o refreshPendingSync RELER o disco —
+        // Um conflito CRDT pode ter sido salvo com sucesso em `notes`, mas ainda
+        // não em `note_yjs`. Só o collab-store pode retirar essa proteção depois
+        // de confirmar o merge; o REST comum preserva o rascunho e o pending id.
+        const removed = await removeDraftUnlessCrdtConflict(id)
+        if (removed) clearPendingDraft(id)
+        else markPendingDraft(id)
+        // Aguarda a decisão de remoção GRAVAR antes de o refreshPendingSync RELER o disco —
         // senão a releitura (que faz clear()+rehidrata) re-injetaria o id recém
         // removido (race de read-modify-write não atômico), deixando o id preso e o
         // realtime de entrada da nota suprimido. refreshPendingSync fica best-effort
         // (void) pra uma eventual falha dele não interromper o sync da task abaixo.
-        await removeDraft(id)
         void get().refreshPendingSync()
       }
 
@@ -1294,6 +1343,12 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       if (!note) continue // nota não carregada nesta sessão — pula
       if (!isDono && note.is_shared_with_me && note.shared_permission !== 'EDIT') continue
       const draft = drafts[id]
+      // Este texto precisa primeiro convergir com `note_yjs`. Enviá-lo apenas para
+      // notes/tasks e removê-lo faria o CRDT canônico antigo reaparecer depois.
+      if (draft.crdtConflict) {
+        markPendingDraft(id)
+        continue
+      }
       try {
         await enqueueNoteWrite(id, async () => {
           await notesPatch('notes', id, { content: draft.content, title: draft.title })
@@ -1410,7 +1465,10 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // O PATCH direto antigo afetava 0 linhas pro colaborador (RLS) e "mentia" sucesso.
     const cur = task.status
     const savedOrigin = get().completedOrigins[taskId] ?? null
-    const optimisticTarget = savedOrigin ?? cur.slice(0, 37) + 'TODO'
+    const originStillExists = !!savedOrigin && useOpsStore.getState().sections.some(
+      (section) => section.key === savedOrigin,
+    )
+    const optimisticTarget = originStillExists ? savedOrigin : cur.slice(0, 37) + 'TODO'
     useOpsStore.setState((s) => ({
       tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, status: optimisticTarget } : t)),
     }))
@@ -1421,7 +1479,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
     const { error } = await supabase.rpc('notas_reopen_task', {
       p_task_id: taskId,
-      p_target_status: savedOrigin,
+      p_target_status: optimisticTarget,
     })
     if (error) {
       console.error('[notes] toggleComplete (reabrir):', error.message)
@@ -1585,15 +1643,6 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // descartamos o resultado antes do set (não injeta dados da visão antiga na nova).
     const gen = _viewGeneration
     const existing = get().notes.find((n) => n.id === noteId)
-    if (existing) {
-      // Já em memória: só retorna cedo se a ÁRVORE (subnotas) também já estiver
-      // carregada. Uma raiz compartilhada entra via loadNotes (shares por id) SEM as
-      // subnotas — sem esta checagem, fetchNoteById(raiz) retornaria cedo e o painel
-      // de subnotas ficaria vazio (contador 0) mesmo com subnotas no banco.
-      const rootId = existing.parent_note_id ?? existing.id
-      const hasTree = get().notes.some((n) => n.parent_note_id === rootId)
-      if (hasTree) return existing
-    }
 
     let note: Note
     if (existing) {
@@ -1610,14 +1659,43 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const rootNoteId = note.parent_note_id ?? note.id
 
     // Carrega a árvore inteira (raiz + subnotas) de uma vez.
-    const { data: relatedData } = await supabase
+    // Sempre refaz a árvore no servidor. A presença de UMA subnota em memória não
+    // prova que a árvore está completa: se o Realtime perder eventos, uma raiz podia
+    // ficar para sempre com uma árvore parcial (ex.: 1 subnota antiga enquanto o banco
+    // já tem 7). A consulta por uma única raiz também evita depender do polling global.
+    const { data: relatedData, error: relatedError } = await supabase
       .from('notes')
       .select('*')
       .or(`id.eq.${rootNoteId},parent_note_id.eq.${rootNoteId}`)
       .eq('is_archived', false)
       .order('position', { ascending: true })
 
-    const relatedNotes = (relatedData ?? [note]).map((item) => normalizeNote(item as Note))
+    // Falha de rede/RLS não pode apagar nem substituir a cópia local, nem devolver
+    // uma nota da visão anterior depois de uma troca de conta.
+    if (_viewGeneration !== gen) return null
+    if (relatedError || !relatedData) return existing ?? note
+
+    const relatedNotes = relatedData.map((item) => normalizeNote(item as Note))
+    const relatedRoot = relatedNotes.find((item) => item.id === rootNoteId)
+    const rootTaskId = relatedRoot?.task_id ?? null
+    let fetchedTaskStatus: { id: string; status: string } | null = null
+    if (
+      rootTaskId
+      && !useOpsStore.getState().tasks.some((task) => task.id === rootTaskId)
+    ) {
+      const { data: taskData } = await supabase
+        .from('tasks')
+        .select('id,status')
+        .eq('id', rootTaskId)
+        .maybeSingle()
+      if (_viewGeneration !== gen) return null
+      fetchedTaskStatus = taskData as { id: string; status: string } | null
+    }
+    applyFetchedSharedFlags(
+      relatedNotes,
+      useAuthStore.getState().getEffectiveUserId(),
+      fetchedTaskStatus,
+    )
 
     // Troca de conta/visão durante os awaits acima invalida este resultado.
     if (_viewGeneration !== gen) return null
@@ -1625,27 +1703,45 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     set((state) => {
       const merged = new Map<string, Note>()
       for (const existingNote of state.notes) merged.set(existingNote.id, existingNote)
+      const remoteIds = new Set(relatedNotes.map((relatedNote) => relatedNote.id))
+
+      // O snapshot desta raiz respondeu inteiro: remove filhos remotos que sumiram,
+      // preservando abas abertas e rascunhos locais ainda não confirmados.
+      for (const existingNote of state.notes) {
+        if (
+          existingNote.parent_note_id === rootNoteId &&
+          !remoteIds.has(existingNote.id) &&
+          !state.openTabs.includes(existingNote.id) &&
+          !_pendingDraftIds.has(existingNote.id)
+        ) {
+          merged.delete(existingNote.id)
+        }
+      }
+
       for (const relatedNote of relatedNotes) {
         const local = merged.get(relatedNote.id)
         if (
           local &&
           (_pendingDraftIds.has(relatedNote.id) || tsNewer(local.updated_at, relatedNote.updated_at))
         ) {
-          // Preserva a edição local ainda não sincronizada; aceita os metadados de
-          // árvore (parent_note_id/position) e conserva as flags de compartilhamento.
+          // A versão local é mais nova ou ainda está em voo: preserva o objeto
+          // inteiro. Manter só conteúdo/título revertia priority/client/due_date e
+          // outros PATCHes otimistas quando este snapshot competia com o save.
           merged.set(relatedNote.id, {
             ...relatedNote,
-            content: local.content,
-            title: local.title,
-            updated_at: local.updated_at,
-            is_shared_with_me: local.is_shared_with_me,
-            shared_permission: local.shared_permission,
+            ...local,
+            is_shared_with_me: relatedNote.is_shared_with_me ?? local.is_shared_with_me,
+            shared_permission: relatedNote.shared_permission ?? local.shared_permission,
           })
         } else {
           merged.set(
             relatedNote.id,
             local
-              ? { ...relatedNote, is_shared_with_me: local.is_shared_with_me, shared_permission: local.shared_permission }
+              ? {
+                  ...relatedNote,
+                  is_shared_with_me: relatedNote.is_shared_with_me ?? local.is_shared_with_me,
+                  shared_permission: relatedNote.shared_permission ?? local.shared_permission,
+                }
               : relatedNote,
           )
         }
@@ -1674,8 +1770,17 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   realtimeChannel: null,
 
   subscribeToNote: (noteId) => {
+    if (_noteRealtimeNoteId !== noteId) _noteRealtimeRetryAttempt = 0
+    _noteRealtimeNoteId = noteId
+    if (_noteRealtimeRetryTimer) {
+      clearTimeout(_noteRealtimeRetryTimer)
+      _noteRealtimeRetryTimer = null
+    }
+
     const existing = get().realtimeChannel
     if (existing) {
+      // Invalida primeiro: o CLOSED tardio do canal antigo não deve reagendar retry.
+      set({ realtimeChannel: null })
       void supabase.removeChannel(existing)
     }
 
@@ -1764,16 +1869,52 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           })
         },
       )
-      .subscribe()
-
+    // Registra antes de assinar para o callback distinguir este canal de um CLOSED
+    // tardio de uma assinatura substituída.
     set({ realtimeChannel: channel })
+    channel.subscribe((status) => {
+      if (get().realtimeChannel !== channel) return
+
+      if (status === 'SUBSCRIBED') {
+        _noteRealtimeRetryAttempt = 0
+        // Fecha a janela snapshot↔assinatura e corrige qualquer árvore parcial que
+        // tenha ficado na memória enquanto o canal estava fora do ar.
+        const activeId = get().activeTabId
+        if (activeId) void get().fetchNoteById(activeId)
+        return
+      }
+
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        // O socket global pode continuar "conectado" enquanto apenas este canal de
+        // postgres_changes morreu. Sem retry próprio, presença seguia viva mas a árvore
+        // da nota ficava congelada indefinidamente.
+        if (_noteRealtimeRetryTimer) clearTimeout(_noteRealtimeRetryTimer)
+        const delay = Math.min(5000 * (2 ** _noteRealtimeRetryAttempt), 60000)
+        _noteRealtimeRetryAttempt += 1
+        _noteRealtimeRetryTimer = setTimeout(() => {
+          _noteRealtimeRetryTimer = null
+          if (get().realtimeChannel !== channel) return
+          const activeId = get().activeTabId
+          if (activeId && useAuthStore.getState().isAuthenticated) {
+            get().subscribeToNote(activeId)
+          }
+        }, delay)
+      }
+    })
   },
 
   unsubscribeFromNote: () => {
+    if (_noteRealtimeRetryTimer) {
+      clearTimeout(_noteRealtimeRetryTimer)
+      _noteRealtimeRetryTimer = null
+    }
+    _noteRealtimeRetryAttempt = 0
+    _noteRealtimeNoteId = null
     const channel = get().realtimeChannel
     if (channel) {
-      void supabase.removeChannel(channel)
+      // Limpa antes do removeChannel: o CLOSED assíncrono precisa ser ignorado.
       set({ realtimeChannel: null })
+      void supabase.removeChannel(channel)
     }
   },
 

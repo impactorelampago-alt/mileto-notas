@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, X } from 'lucide-react'
 import { useOpsStore } from '../../stores/ops-store'
 import { useNotesStore } from '../../stores/notes-store'
+import { useSharingStore } from '../../stores/sharing-store'
 
 interface DeleteSectionModalProps {
   keySuffix: string
@@ -13,6 +14,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
   const tasks = useOpsStore((s) => s.tasks)
   const deleteSection = useOpsStore((s) => s.deleteSection)
   const notes = useNotesStore((s) => s.notes)
+  const categoryShares = useSharingStore((s) => s.categoryShares)
   const [isDeleting, setIsDeleting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
@@ -20,6 +22,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
   const tasksInSection = section ? tasks.filter((t) => t.status === section.key) : []
   const taskIdsInSection = new Set(tasksInSection.map((t) => t.id))
   const notesInSection = notes.filter((n) => n.task_id !== null && taskIdsInSection.has(n.task_id))
+  const shareCount = section ? (categoryShares[section.key]?.length ?? 0) : 0
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -69,7 +72,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
           <div className="flex items-center gap-2">
             <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: section.color }} />
             <span style={{ fontSize: '16px', fontWeight: 600, color: '#cccccc' }}>
-              Excluir seção "{section.label}"
+              Excluir categoria "{section.label}"
             </span>
           </div>
           <button
@@ -87,16 +90,21 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
         <div style={{ padding: '24px 20px', textAlign: 'center' }}>
           <AlertTriangle size={24} style={{ color: '#facc15', margin: '0 auto 12px' }} />
           <p style={{ fontSize: '14px', color: '#cccccc', marginBottom: '8px' }}>
-            Tem certeza que deseja excluir esta seção?
+            Tem certeza que deseja excluir esta categoria?
           </p>
           <p style={{ fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
             {tasksInSection.length === 0
-              ? 'Esta seção não contém tarefas.'
-              : `Todas as ${tasksInSection.length} tarefa${tasksInSection.length === 1 ? '' : 's'} e ${notesInSection.length} nota${notesInSection.length === 1 ? '' : 's'} dentro dela serão excluídas permanentemente.`}
+              ? 'Esta categoria está vazia.'
+              : `${tasksInSection.length} tarefa${tasksInSection.length === 1 ? '' : 's'} e ${notesInSection.length} nota${notesInSection.length === 1 ? '' : 's'} serão movidas para Lembrete.`}
           </p>
           <p style={{ fontSize: '12px', color: '#6d6d6d' }}>
-            Esta ação não pode ser desfeita.
+            Nenhuma nota ou subnota será apagada.
           </p>
+          {shareCount > 0 && (
+            <p style={{ marginTop: '8px', fontSize: '12px', color: '#fbbf24' }}>
+              O compartilhamento será encerrado para {shareCount} pessoa{shareCount === 1 ? '' : 's'}, que {shareCount === 1 ? 'poderá' : 'poderão'} perder o acesso por esta categoria.
+            </p>
+          )}
           {errorMessage && (
             <p style={{ marginTop: '16px', fontSize: '12px', color: '#f87171', backgroundColor: '#451a1a', padding: '8px 12px', borderRadius: '8px', border: '1px solid #7f1d1d' }}>
               {errorMessage}
@@ -126,7 +134,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
             onMouseEnter={(e) => { if (!isDeleting) e.currentTarget.style.backgroundColor = '#b91c1c' }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#dc2626' }}
           >
-            {isDeleting ? 'Excluindo...' : 'Excluir seção'}
+            {isDeleting ? 'Excluindo...' : 'Excluir categoria'}
           </button>
         </div>
       </div>

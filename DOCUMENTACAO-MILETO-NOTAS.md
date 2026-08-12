@@ -2,7 +2,9 @@
 
 > Bloco de notas colaborativo desktop (Electron) — extensão do Mileto Ops sobre banco Supabase compartilhado.
 
-**Data:** 14/06/2026 · **Versão do app:** `1.3.8` (`package.json` → `ops-notas`)
+**Atualizado:** 10/08/2026 · **Versão do app:** `1.4.52` (`package.json` → `ops-notas`)
+
+> **Baseline atual (v1.4.52):** 15 stores, migrations SQL versionadas e coedição CRDT com Yjs/CodeMirror. Desde a primeira edição deste documento, o app ganhou subnotas, mídias/arquivos, menções, histórico de edição, presença colaborativa, notificações próprias, merge em tempo real e grupos recolhíveis de categorias. O changelog técnico detalhado continua em `CLAUDE.md`. O Supabase compartilhado foi confirmado na VPS6 (`ic-supabase-db`); o app Notas é desktop e não possui checkout implantado na VPS6/VPS7.
 
 ---
 
@@ -31,7 +33,7 @@ O **Mileto Notas** (interno: `ops-notas`) é um app desktop de bloco de notas co
 
 **Princípio do banco compartilhado.** O Notas não possui banco próprio. Ele lê e escreve nas mesmas tabelas que o app web do Ops (`tasks`, `custom_statuses`, `clients`, `profiles`) e adiciona, de forma **aditiva e idempotente**, um conjunto de tabelas, funções, policies e triggers com prefixo `notas_`/`note_` que apenas o Notas usa. A consequência operacional fundamental: **toda e qualquer alteração no Notas que toque o banco/integração precisa ser pensada para andar em sincronia com o Ops** (schema, RLS, status keys, prioridades, conclusão de tarefas). Em especial, o helper de identidade de status (`status-keys.ts`) deve ser idêntico byte-a-byte nos dois apps.
 
-**Relação 1:1 com o Ops.** Cada nota do Notas corresponde a exatamente uma `task` do Ops (`notes.task_id`), e cada "categoria" do Notas é uma "section/coluna" do Ops (uma linha de `custom_statuses`). Criar, editar, priorizar e concluir notas reflete diretamente no kanban do Ops. Já o compartilhamento, as notificações do sino e as mídias por nota vivem em objetos exclusivos do Notas e **não** refletem no Ops.
+**Relação com o Ops.** Cada nota-raiz do Notas corresponde a uma `task` do Ops (`notes.task_id`), e cada "categoria" do Notas é uma "section/coluna" do Ops (uma linha de `custom_statuses`). Subnotas têm `parent_note_id`, não possuem `task_id` e não criam card. Criar, editar, priorizar e concluir uma nota-raiz reflete diretamente no kanban do Ops. Compartilhamento, subnotas, notificações, presença, estado CRDT, histórico e mídias vivem em objetos exclusivos do Notas.
 
 ---
 
@@ -45,6 +47,8 @@ O **Mileto Notas** (interno: `ops-notas`) é um app desktop de bloco de notas co
 | Linguagem | TypeScript | `^5.5.3` |
 | Estilo | Tailwind CSS v4 (`@tailwindcss/postcss`) | `^4.0.0` |
 | State | Zustand | `^5.0.0` |
+| Editor Markdown | CodeMirror 6 | pacotes `@codemirror/*` |
+| Coedição CRDT | Yjs + `y-codemirror.next` | `^13.6.31` / `^0.3.5` |
 | Banco/Auth/Realtime/Storage | Supabase (`@supabase/supabase-js`) | `^2.98.0` |
 | Auto-update | `electron-updater` + GitHub Releases | `^6.2.1` |
 | Persistência local | `electron-store` | `^8.2.0` |
@@ -72,7 +76,7 @@ O app segue a separação clássica de Electron:
 
 ### 3.2. Stores Zustand e fluxo de dados
 
-O estado do renderer vive em **9 stores Zustand** independentes (`create<T>()`), sem Context React. Os stores se comunicam imperativamente via `useXStore.getState()`. A fonte de verdade dos dados é o Supabase; camadas de cache local (electron-store e localStorage) são rede de segurança.
+O estado do renderer vive em **15 stores Zustand** independentes (`create<T>()`), sem Context React. Os stores se comunicam imperativamente via `useXStore.getState()`. A fonte de verdade dos dados é o Supabase; camadas de cache local (electron-store e localStorage) são rede de segurança.
 
 Padrões transversais:
 
@@ -138,7 +142,7 @@ Diagrama do fluxo de dados (texto):
 
 ## 4. Modelo de dados e integração com o Ops
 
-Fontes: `src/lib/types.ts`, `src/lib/sections.ts`, `src/lib/status-keys.ts`, `src/lib/supabase.ts` e as 8 migrations em `supabase/migrations/`.
+Fontes: `src/lib/types.ts`, `src/lib/sections.ts`, `src/lib/status-keys.ts`, `src/lib/supabase.ts` e as migrations em `supabase/migrations/`.
 
 ### 4.1. Cliente Supabase (`src/lib/supabase.ts`)
 
@@ -146,7 +150,7 @@ Fontes: `src/lib/types.ts`, `src/lib/sections.ts`, `src/lib/status-keys.ts`, `sr
 - **Persistência de sessão sob medida para Electron:** define um `electronStorage` que, quando existe `window.electronAPI.sessionStorage`, guarda a sessão via bridge (disco do processo principal); senão cai para o `localStorage` do navegador.
 - **Config de auth:** `persistSession: true`, `autoRefreshToken: true`, `detectSessionInUrl: false` (não há fluxo OAuth/redirect hoje) e um `lock` customizado que apenas executa `fn()` sem locking real (o lock padrão do supabase-js via Web Locks API não se comporta bem no Electron).
 
-### 4.2. Mapeamento nota ↔ task (1:1) e categoria ↔ custom_status
+### 4.2. Mapeamento nota-raiz ↔ task (1:1), subnota e categoria ↔ custom_status
 
 | Conceito no Notas | Campo / objeto no Ops (banco compartilhado) |
 |---|---|
@@ -217,13 +221,14 @@ Helpers complementares em `sections.ts`:
 
 `src/stores/auth-store.ts` é o store-raiz: define quem é o "usuário efetivo" cujas notas/tasks são carregadas.
 
-**Estado principal:** `user` (usuário REAL autenticado), `profile` (perfil do real, com `role`), `isLoading`, `isAuthenticated`, `teamProfiles` (todos os perfis), `viewingAs` (conta visualizada na impersonação; `null` = própria conta).
+**Estado principal:** `user` (usuário REAL da sessão), `profile` (perfil do real, com `role`), `isLoading`, `isAuthenticated`, `mfaRequired`, `authError`, `teamProfiles` (todos os perfis), `viewingAs` (conta visualizada na impersonação; `null` = própria conta).
 
 **Ações-chave:**
 
-- **`initialize`** — arma uma rede de segurança `setTimeout(6000ms)` que força `isLoading: false` (a tela de carregamento nunca trava); `getSession()`; se há sessão, dispara `loadProfile` em background; registra `onAuthStateChange` para `SIGNED_OUT`/re-login.
-- **`signIn`** — `signInWithPassword`; traduz erros do GoTrue para pt-BR (`translateAuthError`).
-- **`signOut`** — ponto central de **reset total** (no `finally`, mesmo em falha de rede): zera `viewingAs`/`teamProfiles`, `useCollaboratorsStore.resetStore()`, zera tokens cacheados (`clearNotesAuthCache` + `clearOpsAuthCache`), encerra os canais Realtime (`unsubscribeFromNote` + `unsubscribeFromOpsChanges`) e esvazia os stores notes/ops. (O sino é limpo separadamente, pelo cleanup do `useEffect` em `MainApp` quando `isAuthenticated` vira false — `signOut` não chama `notifications.unsubscribe/clear` diretamente.)
+- **`initialize`** — arma uma rede de segurança `setTimeout(6000ms)`, recupera a sessão, registra `onAuthStateChange` e passa toda sessão pelo gate de AAL antes de abrir o app.
+- **`signIn`** — `signInWithPassword`; traduz erros do GoTrue para pt-BR e avalia o Authenticator Assurance Level. Se a conta possui TOTP verificado e a sessão está em AAL1, mantém `isAuthenticated=false` e ativa `mfaRequired`.
+- **`verifyMfa`** — valida os 6 dígitos por `mfa.challengeAndVerify`, reavalia a sessão e só publica `isAuthenticated=true` depois de confirmar AAL2.
+- **`signOut`** — ponto central de **reset total** (também usado pelo evento remoto `SIGNED_OUT`): invalida loaders da identidade anterior, zera impersonação/perfis/permissões, limpa shares e tokens cacheados, encerra canais Realtime e esvazia snapshots notes/ops. O reset é idempotente e não chama métodos do Supabase dentro do callback de auth.
 - **`setViewingAs(profile)`** — núcleo da impersonação (front-first): seta `viewingAs`, reseta notes/ops, recarrega `loadNotes()` + `refreshOpsSnapshot('view-switch')`.
 - **`getEffectiveUserId`** — `viewingAs?.id ?? user?.id`. É o seletor que `loadNotes` e `refreshOpsSnapshot` usam para decidir de quem são os dados.
 - **`canDeleteNote(note)`** — `note.creator_id === user?.id`. **Nunca usa `viewingAs`**: excluir é do dono real.
@@ -245,13 +250,13 @@ Helpers complementares em `sections.ts`:
 
 ### 6.2. Login (`src/pages/Login.tsx`)
 
-Email + senha sobre fundo escuro com `<Particles/>` (canvas: 50 partículas brancas semitransparentes que sobem com oscilação senoidal). Controles de janela próprios (frameless): Minimizar/Maximizar/Fechar via `electronAPI.window.*`. Campo de senha com botão olho (`Eye`/`EyeOff`). Validação local (campos vazios → "Preencha o email e a senha."); `signIn(email, password)`; durante a chamada o botão vira "Entrando...". O formulário usa `noValidate` e submete com **Enter**.
+Email + senha sobre fundo escuro com `<Particles/>` (canvas: 50 partículas brancas semitransparentes que sobem com oscilação senoidal). Controles de janela próprios (frameless): Minimizar/Maximizar/Fechar via `electronAPI.window.*`. Campo de senha com botão olho (`Eye`/`EyeOff`). Validação local (campos vazios → "Preencha o email e a senha."); `signIn(email, password)`; durante a chamada o botão vira "Entrando...". Se a conta exige MFA, o mesmo card muda para a etapa TOTP no tema esmeralda: input numérico de 6 dígitos (`autocomplete=one-time-code`), botão “Confirmar código” e “Voltar para o login”. O formulário usa `noValidate` e submete com **Enter**. Uma sessão AAL1 nunca abre o `MainApp` quando `nextLevel=aal2`; isso evita que a RLS de staff seja confundida com uma conta sem dados.
 
 ### 6.3. Layout principal (frameless / titlebar custom) — `src/pages/MainApp.tsx`
 
 A janela é **sem moldura** (`frame: false`, `titleBarStyle: 'hidden'`). Árvore: `<Titlebar/>` → `<TabBar/>` → `<SearchBar/>` (só se `searchBarVisible`) → `<Editor/>` → `<StatusBar/>`. Abaixo, montados condicionalmente, os modais. Janela 1280×800 (mín. 800×600), `backgroundColor: '#1e1e1e'`, `show: false` até `ready-to-show`. Links externos abrem no navegador padrão (`setWindowOpenHandler` → `shell.openExternal`).
 
-Efeitos de inicialização: ao autenticar, carrega categorias, notas com colaboradores e perfis; encadeia `loadShares()` → `loadNotes()` → `scheduleOpsRefresh('shares-loaded')` (os mapas "compartilhado-comigo" precisam estar prontos antes de montar notas/seções); inicia Ops sync (`loadOpsData`, `subscribeToOpsChanges`, `setupAutoReconciliation`) e o sino (`loadNotifications` + `subscribe`). Garante sempre uma categoria ativa (última usada, ou "Lembrete", ou a primeira). Restaura rascunhos locais na abertura e abre a última nota da categoria ativa (ou cria uma "Sem título"). Assina o Realtime da nota ativa.
+Efeitos de inicialização: ao autenticar, carrega categorias, grupos pessoais recolhíveis, notas com colaboradores e perfis; encadeia `loadShares()` → `loadNotes()` → `scheduleOpsRefresh('shares-loaded')` (os mapas "compartilhado-comigo" precisam estar prontos antes de montar notas/seções); inicia Ops sync (`loadOpsData`, `subscribeToOpsChanges`, `setupAutoReconciliation`) e o sino (`loadNotifications` + `subscribe`). Garante sempre uma categoria ativa (última usada, ou "Lembrete", ou a primeira). Restaura rascunhos locais na abertura e abre a última nota da categoria ativa (ou cria uma "Sem título"). Assina o Realtime da nota ativa.
 
 > **`MenuBar.tsx` existe mas NÃO é montado.** A seleção de categoria real vive no titlebar (`CategorySelect`).
 
@@ -261,7 +266,11 @@ Barra de 40px (`#1a1a1a`). Esquerda: logo + "Mileto Ops Notas" + `<CategorySelec
 
 ### 6.5. Categorias / sections (`CategorySelect.tsx`)
 
-Dropdown no titlebar que lista as categorias (= sections do Ops), troca a ativa, cria, renomeia, exclui e compartilha. Botão-gatilho mostra bolinha de cor + label + chevron. `counts` conta notas por categoria com a regra "concluída conta na origem". Cada linha: acento esquerdo (emerald se ativa; verde contínuo se compartilhada comigo, com badge "Compartilhada"); ações no hover só se `canManage` (dono + custom + não-compartilhada-comigo): Compartilhar (`Users`), Renomear (`Pencil`, inline Enter/Escape/blur), Excluir (`Trash2` → `DeleteSectionModal`). Categorias de sistema são fixas. **Criar categoria**: input + 8 cores (`SECTION_COLORS`) + toggle **Privada/Compartilhada**; se "compartilhada", abre o `SharePickerModal` automaticamente.
+Dropdown no titlebar que lista as categorias (= sections do Ops), troca a ativa, cria, renomeia, exclui e compartilha. Botão-gatilho mostra bolinha de cor + label + chevron. A busca ignora caixa e acentos; Enter abre o primeiro resultado e a busca revela categorias mesmo dentro de grupo fechado. `counts` conta notas por categoria. Cada linha: acento esquerdo (emerald se ativa; verde contínuo se compartilhada comigo, com badge "Compartilhada"); ações no hover do dono: Compartilhar, Renomear e Excluir.
+
+**Grupos/pastas recolhíveis (v1.4.52):** “Novo grupo recolhível” cria uma preferência pessoal sincronizada nas tabelas `notas_category_groups`/`notas_category_group_items`. Categorias próprias ou compartilhadas podem ser arrastadas para um grupo, entre grupos ou para “Sem grupo”; o estado recolhido e a ordem são persistidos. Excluir grupo preserva as categorias e apenas as desagrupa. Grupos são editáveis só na conta própria; “Todos” e impersonação usam lista plana.
+
+**Defaults:** somente `TODO`, exibido sempre como **Lembrete**, é nativo visível e impagável. `IN_PROGRESS`, `IN_REVIEW`, `DONE` e `CANCELLED` não aparecem no seletor. `DONE` permanece por enquanto no banco como estado técnico do fluxo de conclusão do Ops; na conta Mileto auditada, as demais rows legadas são migradas para TODO sem tocar fisicamente nas outras contas do banco compartilhado. Excluir uma categoria nunca apaga conteúdo: `notas_delete_category` move suas tasks/notas para o Lembrete do mesmo dono, remove shares e só então exclui a row. **Criar categoria**: input + 8 cores (`SECTION_COLORS`) + toggle **Privada/Compartilhada**; se compartilhada, abre o `SharePickerModal` automaticamente.
 
 `SECTION_COLORS` (8): `#3b82f6, #10b981, #ef4444, #f59e0b, #8b5cf6, #ec4899, #f97316, #06b6d4`.
 
@@ -271,7 +280,7 @@ No store (`categories-store.ts`) há ainda CRUD de `note_categories` (tabela pr�
 
 Peça central da navegação, estilo Bloco de Notas do Windows 11. Mostra as abas (notas) da **categoria ativa**; nota nova entra à direita. Altura 38px.
 
-- **Montagem (`taskToSectionMap`):** mapeia cada task → sufixo de section. Nota **concluída** fica na categoria de **ORIGEM** (`completedOrigins[task.id]`), não no DONE — não some ao concluir. Casamento primeiro pela **key completa**; fallback por sufixo só para categorias de SISTEMA.
+- **Montagem (`taskToSectionMap`):** mapeia cada task → sufixo de section. Casamento primeiro pela **key completa**. Como os workflows legados estão ocultos, uma DONE usa `completedOrigins[task.id]` quando disponível; sem origem local (ou para outro status legado ainda não migrado), cai visualmente em Lembrete para nunca sumir.
 - **Cada aba:** largura 132–210px; faixa de prioridade (stripe de 2px animado por `layoutId="activeTabStripe"`); bolinha de urgência (clique abre menu de prioridade); pin (se `is_pinned`); título (`note.title || 'Sem título'`; se concluída, cinza + riscado); ícone de colaboração (`Users` verde) se tem colaboradores / foi compartilhada por mim / é compartilhada comigo; **✓ Concluir/Reabrir** (toggle — só se `canComplete`); **✗ Excluir** (só se `canDeleteNote`).
 - **Interações:** clique = `openTab`+`setActiveTab`; duplo-clique = renomear inline (Enter/Escape/blur); botão-direito = context menu (Concluir/Reabrir, Renomear se dono/EDIT, Compartilhar só dono → `SharePickerModal`, Excluir só dono).
 - **Botão "+"**: cria nota "Sem título" na categoria ativa. **Auto-criar**: se a categoria ativa fica sem nenhuma nota, após 400ms cria uma vazia (uma tentativa por categoria; **não** durante impersonação).
@@ -289,7 +298,7 @@ Peça central da navegação, estilo Bloco de Notas do Windows 11. Mostra as aba
 - **`createNote`** (otimista): cria a task primeiro (`createTaskInOps`; se falhar, aborta), insere nota otimista no topo + abre aba, depois insere a nota real vinculada ao `task_id`; reverte em erro.
 - **`updateNote`** (edição + sync + rascunho): bloqueia se compartilhada-comigo sem EDIT; otimista; grava rascunho local imediato; `notesPatch('notes', ...)` (reverte em falha); remove rascunho em sucesso; **sync nota→task independente** (PATCH em `tasks` mapeando content/title/priority; se falhar por RLS, não reverte a nota).
 - **`deleteNote`**: liga `_deletionInProgress`; ordem (1) deleta a task (checa `count === 0` = bloqueio por RLS → aborta), (2) deleta a nota, (3) atualiza UI.
-- **Abas/seletores:** `openTab`/`closeTab`/`setActiveTab`/`getNotesByCategory`/`getActiveNote`/`fetchNoteById`/`loadNotesWithCollaborators`. (`closeAllTabs` existe mas é órfão — nenhum componente o chama.)
+- **Abas/seletores:** `openTab`/`closeTab`/`setActiveTab`/`getNotesByCategory`/`getActiveNote`/`fetchNoteById`/`loadNotesWithCollaborators`. `fetchNoteById` sempre refaz o snapshot raiz+subnotas: uma única filha em cache não significa árvore completa. O merge adiciona/atualiza/remove filhos remotos sem sobrescrever aba aberta, rascunho pendente ou versão local mais nova. (`closeAllTabs` existe mas é órfão.)
 
 ### 6.7. Concluir / reabrir (toggle)
 
@@ -340,7 +349,7 @@ Textarea monospace (`JetBrains Mono`, cor `#cccccc`, fundo `#2d2d2d`, `spellChec
 Sino próprio do Notas, independente do sino do Ops. **Sempre do usuário REAL** (`user?.id`), nunca de `viewingAs`. Lê `notas_notifications` (limite 50, ordenado por `created_at` desc). Dois tipos:
 
 - **`task_completed`** (`CheckCircle2` verde, "concluiu:") — quando alguém que não é o criador conclui uma tarefa.
-- **`note_created`** (`FilePlus2` azul, "adicionou uma nota:") — quando alguém cria nota numa categoria compartilhada.
+- **`note_created`** (`FilePlus2` azul, "adicionou uma nota:") — quando alguém cria nota numa categoria compartilhada. Os destinatários são cada `shared_with` + o dono canônico derivado da `category_key`, exceto autor/ator; assim o dono também é avisado quando um destinatário cria nela.
 
 UI: badge vermelho com contagem de não-lidas (">9" vira "9+"); botão "Marcar lidas" (`markAllRead`); cada item mostra ator (resolvido por `resolveActorNames`) + verbo + título + tempo relativo (`timeAgo`); clicar → `openNotification` (acha a nota local por `task_id`, calcula o status efetivo respeitando a origem de conclusão, casa **sempre por key completa**, abre a aba). Realtime: canal `notas_notif:<uid>` (INSERT filtrado por `recipient_id`).
 
@@ -433,7 +442,7 @@ Fontes: UI = `Segoe UI Variable Text`/`Segoe UI`/system (14px); editor e número
 - **`scheduleOpsRefresh(reason)`**: debounce de 300ms que consolida múltiplos eventos.
 - **`subscribeToOpsChanges`** (canal `ops-changes`): handlers são gatilhos puros — `tasks`/`custom_statuses` → `scheduleOpsRefresh`; `category_shares`/`note_shares` → `reconcileShares` (recarrega `loadShares()` → `refreshOpsSnapshot` + `loadNotes()` para o compartilhamento aparecer na hora). O Realtime respeita RLS (só chegam linhas visíveis). Em `CHANNEL_ERROR`, re-subscreve em 5s.
 - **`setupAutoReconciliation`**: em foco/visibilidade (`visibilitychange` → `visible`) recarrega shares + snapshot + notas; **polling de 10s** chama `refreshOpsSnapshot('polling-10s')`.
-- **Realtime por-nota** (`subscribeToNote` no notes-store): canal `note:<id>` (UPDATE filtrado por `id`); só aplica se `updated.updated_at > localNote.updated_at` (não regride).
+- **Realtime por-nota** (`subscribeToNote` no notes-store): canal `note:<id>` (UPDATE da nota ativa + `*` na subárvore). Só aplica versão remota mais nova e respeita rascunho. Ao chegar em `SUBSCRIBED`, faz snapshot direcionado da árvore para fechar a janela snapshot↔assinatura; `CHANNEL_ERROR`/`TIMED_OUT`/`CLOSED` usam retry exponencial limitado a 60s e ignoram callbacks tardios de canal substituído.
 
 ---
 
@@ -477,6 +486,7 @@ Todos criados de forma **aditiva e idempotente** com prefixo `notas_`/`note_`, p
 - **`category_shares`**: `id`, `category_key` (text — **KEY COMPLETA**, casa por igualdade exata com `tasks.status`), `shared_with`, `shared_by`, `created_at`. Único `(category_key, shared_with)`. (Coluna `permission` opcional não aplicada por padrão; hoje compartilhar categoria implica EDIT.)
 - **`notas_notifications`** (`notas_notifications.sql`): `id`, `recipient_id` (FK `profiles` CASCADE), `actor_id` (FK `profiles` SET NULL), `task_id` (uuid, **sem FK**), `note_id` (uuid, sem FK), `title` (default `''`, snapshot), `type` (default `'task_completed'`), `created_at`, `read_at`. Índice `(recipient_id, read_at, created_at desc)`.
 - **`note_media`** (`note_media_and_shared_note_notify.sql`): `id`, `note_id` (FK `notes` CASCADE), `storage_path`, `mime_type` (default `'image/png'`), `filename`, `created_by` (FK `profiles` SET NULL), `created_at`. Índice `(note_id, created_at)`.
+- **`notas_category_groups` / `notas_category_group_items`** (`20260810160100_notas_category_groups.sql`): organização pessoal e isolada por `account_id` das `custom_statuses` exibidas no Notas. Cada usuário tem seus grupos, ordem, estado `collapsed` e no máximo um vínculo por `category_key`. RLS permite escrita somente ao próprio `user_id` dentro da conta atual; apagar grupo apaga só vínculos, nunca a categoria.
 
 ### 10.2. Funções, RPCs e policies
 
@@ -506,12 +516,14 @@ Todos criados de forma **aditiva e idempotente** com prefixo `notas_`/`note_`, p
 - **`notas_complete_task(p_task_id)`** — caminho único do "Concluir". Valida via `notas_can_complete_task`, deriva a key DONE do **mesmo dono** (`left(status,37)||'DONE'`, identidade estrita), exige que a key DONE exista em `custom_statuses`, é no-op idempotente se já concluída. `REVOKE ALL FROM public` + GRANT a `authenticated`.
 - **`notas_reopen_task(p_task_id, p_target_status)`** — reabrir/desfazer. Default = TODO do mesmo dono; valida mesmo dono + existência em `custom_statuses`; autoriza dono da task OU categoria compartilhada OU nota com EDIT.
 - **`notas_complete_task`/`notas_reopen_task`** substituíram o PATCH direto, que afetava 0 linhas para o colaborador e fingia sucesso.
+- **`notas_delete_category(p_category_key)`** — valida dono/DONO, bloqueia TODO, exige o TODO do mesmo prefixo, move todas as tasks para ele, limpa `category_shares` e exclui `custom_statuses` atomicamente. Notas/subnotas permanecem pelos mesmos IDs.
 - `get_ops_snapshot()` existe (`get_ops_snapshot.sql`) mas **não é usada pelo front** (código morto). Ainda contém a derivação frágil por `split_part` — não usar para casar sufixos.
 
 **Triggers de notificação (best-effort, `EXCEPTION when others` para nunca abortar a escrita na task):**
 
 - `trg_notas_notify_on_complete` (AFTER UPDATE OF status em `tasks`): status vira o DONE canônico do dono e quem concluiu não é o `creator_id` → insere `task_completed`. Captura conclusões feitas pelo Notas **ou** pelo Ops.
-- `trg_notas_notify_on_shared_note` (AFTER INSERT em `tasks`): status = `category_shares.category_key` → avisa cada `shared_with` (exceto criador/ator) com `note_created`.
+- `trg_notas_notify_shared_note_ins`/`_upd` (INSERT/UPDATE de título em `notes`): quando a raiz ganha título real, avisa cada `shared_with` + o dono derivado da key (exceto criador/ator), com dedup por nota+destinatário.
+- `trg_notas_protect_reminder_category` (`custom_statuses`): impede DELETE ou troca da key canônica `_TODO`; o label é normalizado para “Lembrete”.
 
 **Storage:** bucket privado **`note-media`** (`public=false`, limite **25 MB = 26214400 bytes**, MIME só raster: png/jpeg/gif/webp/avif — SVG fora). Caminho `<note_id>/<uuid>.<ext>`. Policies em `storage.objects` espelham o acesso à nota: leitura = nota visível; upload/remoção = `notas_can_edit_note`.
 
@@ -525,9 +537,11 @@ Todos criados de forma **aditiva e idempotente** com prefixo `notas_`/`note_`, p
 |---|---|---|
 | Criar/editar nota (título, conteúdo, prioridade) | **Sim** | Mesmas `tasks` (`title`/`description`/`priority`). |
 | Criar categoria (section) | **Sim** | Mesma `custom_statuses`. |
+| Excluir categoria | **Sim** | A row sai de `custom_statuses`, mas antes todas as tasks/notas são movidas para o TODO do mesmo dono; nenhum conteúdo é apagado. |
 | Concluir nota | **Sim** | `tasks.status` → DONE do dono; vira coluna "Concluído" no kanban. A task continua existindo. |
 | Reabrir nota concluída | **Sim** | `notas_reopen_task` move o status de volta. |
 | **Compartilhar nota/categoria** | **NÃO** | `note_shares`/`category_shares` — só do Notas. |
+| Agrupar/recolher categorias | **NÃO** | `notas_category_groups`/`items` são preferências pessoais exclusivas do Notas. |
 | Sino de notificações | **NÃO** (independente) | `notas_notifications` é exclusivo do Notas. |
 | Mídias por nota | **NÃO** hoje | `note_media` + bucket — do Notas. |
 | "Concluída de origem" (manter visível) | **NÃO** | localStorage `notas:completed-origins` por `task_id`. |
@@ -602,7 +616,7 @@ O helper canônico `status-keys.ts` (v1.3.5) impede **novos** erros. Os **antigo
 
 NSIS: `oneClick: false`, `allowToChangeInstallationDirectory: true`, atalhos desktop/menu iniciar (`shortcutName: "Ops Notas"`).
 
-Publicação / GitHub Releases (`publish`): `provider: github`, `owner: impactorelampago-alt`, `repo: mileto-notas`, `releaseType: release`. O `electron-updater` lê dali o `.exe` + `latest.yml`; em runtime, `checkForUpdates()` baixa o `latest.yml`, compara com `1.3.5` e dispara `update-available` se houver versão maior.
+Publicação / GitHub Releases (`publish`): `provider: github`, `owner: impactorelampago-alt`, `repo: mileto-notas`, `releaseType: release`. O `electron-updater` lê dali o `.exe` + `latest.yml`; em runtime, `checkForUpdates()` baixa o `latest.yml`, compara com a versão atual do app (`1.4.52`) e dispara `update-available` se houver versão maior.
 
 ### Fluxo de release
 
@@ -619,7 +633,7 @@ Publicação / GitHub Releases (`publish`): `provider: github`, `owner: impactor
 1. **Escopo Notas vs board do Ops** (§11.2): ✅ **resolvido (v1.3.6)** — a Notas ganhou o modo "Todos" (gestão alterna entre "minha conta" e "toda a equipe"), espelhando o Ops. O "2 vs 24" é a escolha de escopo, não bug.
 2. **Furo de RLS em `tasks`** (§11.3): ✅ **fechado (jun/2026)** — policy aberta removida e substituída por escopadas + hierarquia (gestão lê tudo; demais só o seu/compartilhado). Resta só o INSERT aberto (pendência menor).
 3. **Bugs de dados legados** (§11.4): ✅ **migrado (jun/2026)** — 36 tasks movidas pras keys canônicas + 3 colunas criadas → **0 órfãs**.
-4. **Caveat das notificações `note_created`**: dispara no INSERT da task, antes do auto-título → o título vem como "Nova nota"/"Sem título" (clicar abre a nota com o título real); aponta por `task_id` (note_id NULL) e abrir depende da nota já estar carregada localmente.
+4. **Migrations v1.4.52 aplicadas na VPS6 em 12/ago/2026**: RLS/hardening, grupos recolhíveis, exclusão segura e aviso ao dono foram aplicados na ordem `20260810160000`→`20260810160300`, após dump completo recuperável e validação transacional dos fluxos. Uma task órfã pré-existente foi remediada para o TODO canônico do mesmo dono sem alterar sua nota/conteúdo; zero órfãs ao final. A remoção física das categorias legadas continua deliberadamente separada em `supabase/manual/20260810_cleanup_legacy_categories_mileto.sql`: **não foi executada** e só pode rodar depois de preview e aprovação explícita.
 5. **`get_ops_snapshot` é código morto no front**: o refresh usa 2 queries REST diretas; a RPC ainda existe na migration com derivação frágil por `split_part`.
 6. **Modais órfãos**: `ConnectModal`, `CollaboratorsModal`, `SharedNotesModal`, `AssignCategoryModal` estão montados mas sem gatilho de abertura. `MenuBar` e `InputModal` existem mas não são montados.
 7. **`SearchBar`** está visualmente pronto mas sem lógica de busca/substituição ligada (a busca funcional é o QuickSearch).
@@ -628,6 +642,7 @@ Publicação / GitHub Releases (`publish`): `provider: github`, `owner: impactor
 10. **`createSection` calcula `position` pelo índice do array** (não pela coluna `position` do banco) — pode gerar colisões de posição.
 11. **`closeAllTabs`** (notes-store) e **`hasLoaded`** (notifications-store) são órfãos (definidos, não usados).
 12. **Compartilhamento não reflete no Ops** (por design): decidir futuramente se unifica com a delegação do Ops.
+13. **DONE ainda é técnico**: fica oculto no Notas, mas não pode ser apagado fisicamente enquanto Ops, `notas_complete_task`, `notas_reopen_task` e notificações dependerem de `_DONE`. Migrar ambos os apps para `tasks.completed/completed_at` antes da remoção final.
 
 ### Melhorias futuras (registradas no CLAUDE.md)
 
@@ -660,7 +675,7 @@ ops-notas/
 │   │   ├── layout/
 │   │   │   ├── Titlebar.tsx        # Barra superior custom (40px)
 │   │   │   ├── TabBar.tsx          # Abas das notas (concluir/excluir/prioridade/context menu)
-│   │   │   ├── CategorySelect.tsx  # Dropdown de categorias = sections (criar/editar/compartilhar)
+│   │   │   ├── CategorySelect.tsx  # Categorias + busca + grupos/pastas recolhíveis
 │   │   │   ├── AccountSwitcher.tsx # Impersonação (trocar de conta)
 │   │   │   ├── NotificationBell.tsx# Sino (task_completed / note_created)
 │   │   │   ├── StatusBar.tsx       # Rodapé (Ln/Col, chars, salvamento)
@@ -674,7 +689,7 @@ ops-notas/
 │   │       ├── SharePickerModal.tsx# Compartilhar categoria/nota (único caminho ativo)
 │   │       ├── CategoryModal.tsx   # Criar/editar categoria
 │   │       ├── DeleteNoteModal.tsx # Confirmar exclusão de nota
-│   │       ├── DeleteSectionModal.tsx # Excluir section (avisa cascata)
+│   │       ├── DeleteSectionModal.tsx # Excluir categoria (conteúdo vai para Lembrete)
 │   │       ├── ClientAnnotationsModal.tsx     # Anotações de empresa (leitura)
 │   │       ├── AddAnnotationToCompanyModal.tsx# Salvar trecho na empresa (append)
 │   │       ├── ConnectModal.tsx    # (órfão) conectar nota a empresa/tarefa
@@ -687,6 +702,7 @@ ops-notas/
 │   │   ├── auth-store.ts           # Sessão + perfil + impersonação (raiz; getEffectiveUserId)
 │   │   ├── notes-store.ts          # Notas, abas, sync nota↔task, concluir/reabrir, Realtime
 │   │   ├── ops-store.ts            # Snapshot sections/tasks (2 queries REST), Realtime, reconciliação
+│   │   ├── category-groups-store.ts # Grupos pessoais, recolhimento, atribuição e ordem
 │   │   ├── sharing-store.ts        # note_shares/category_shares (+ fallback local)
 │   │   ├── notifications-store.ts  # Sino (notas_notifications)
 │   │   ├── categories-store.ts     # note_categories (tabela própria, tangencial)
@@ -702,7 +718,7 @@ ops-notas/
 │       ├── local-drafts.ts         # Rascunhos + sessão (electron-store)
 │       ├── completed-origins.ts    # Origens de conclusão (localStorage)
 │       └── clipboard-image.ts      # Cópia de imagem (PNG via canvas)
-├── supabase/migrations/
+├── supabase/migrations/                  # Migrations SQL (lista resumida)
 │   ├── redesign_notes_system.sql              # category_id UUID→TEXT; note_categories não usada
 │   ├── add_note_priority_and_client_annotations.sql # notes.priority + note_client_annotations
 │   ├── get_ops_snapshot.sql                   # RPC get_ops_snapshot (NÃO usada pelo front)
@@ -710,9 +726,15 @@ ops-notas/
 │   ├── rls_shared_edit_and_conclude.sql       # Pacote 2: edição por destinatário + notas_complete_task
 │   ├── notas_notifications.sql                # Sino + trigger complete + notas_reopen_task
 │   ├── note_media_and_shared_note_notify.sql  # note_media + bucket + trigger note_created
-│   └── realtime_shares.sql                    # publication realtime de category_shares/note_shares
+│   ├── realtime_shares.sql                    # publication realtime de category_shares/note_shares
+│   ├── 20260810160000_notas_tasks_update_vps6_state.sql # Drift vivo + hardening RLS
+│   ├── 20260810160100_notas_category_groups.sql # Grupos pessoais multi-tenant
+│   ├── 20260810160200_notas_category_cleanup_and_safe_delete.sql # Invariantes + exclusão sem perda
+│   └── 20260810160300_notas_notify_shared_category_owner.sql # Sino inclui dono canônico
+├── supabase/manual/
+│   └── 20260810_cleanup_legacy_categories_mileto.sql # Limpeza controlada; backup + aprovação
 ├── CLAUDE.md                  # Documento-mestre do projeto (integração com o Ops)
-├── package.json               # v1.3.5
+├── package.json               # v1.4.52
 ├── vite.config.ts
 ├── electron-builder.json5
 ├── tsconfig.json · tsconfig.node.json · postcss.config.js
