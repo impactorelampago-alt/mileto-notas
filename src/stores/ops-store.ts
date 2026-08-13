@@ -11,6 +11,7 @@ import type { NotePriority, Recurrence } from '../lib/types'
 import { normalizePriority } from '../lib/note-priority'
 import { ownerPrefixOfKey } from '../lib/sections'
 import { getStatusBase, buildStatusKey } from '../lib/status-keys'
+import { OpsRefreshCoordinator, type OpsRefreshOutcome } from '../lib/ops-refresh-coordinator'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
@@ -424,7 +425,7 @@ interface OpsUIState {
 
 interface OpsActions {
   loadOpsData: () => Promise<void>
-  refreshOpsSnapshot: (reason: string) => Promise<void>
+  refreshOpsSnapshot: (reason: string) => Promise<OpsRefreshOutcome>
   scheduleOpsRefresh: (reason: string) => void
   setActiveSectionId: (id: string | null) => void
   createSection: (label: string, color: string) => Promise<boolean>
@@ -452,10 +453,43 @@ type OpsState = OpsDomainState & OpsUIState & OpsActions & {
 
 let _refreshTimer: ReturnType<typeof setTimeout> | null = null
 let _retryTimer: ReturnType<typeof setTimeout> | null = null
-let _isRefreshing = false
-let _pendingRefresh = false
+const _refreshCoordinator = new OpsRefreshCoordinator()
+let _taskRefreshFailureCount = 0
+let _nextTaskRefreshAt = 0
+let _taskRefreshScope: string | null = null
 
 const DEBOUNCE_MS = 300
+const TASK_RETRY_DELAYS_MS = [15_000, 30_000, 60_000] as const
+
+function resetTaskRefreshBackoff(scope: string | null = null): void {
+  _taskRefreshFailureCount = 0
+  _nextTaskRefreshAt = 0
+  _taskRefreshScope = scope
+}
+
+function prepareTaskRefreshScope(scope: string): void {
+  if (_taskRefreshScope !== scope) resetTaskRefreshBackoff(scope)
+}
+
+function registerTaskRefreshFailure(scope: string): number {
+  prepareTaskRefreshScope(scope)
+  const delayIndex = Math.min(_taskRefreshFailureCount, TASK_RETRY_DELAYS_MS.length - 1)
+  const delay = TASK_RETRY_DELAYS_MS[delayIndex]
+  _taskRefreshFailureCount += 1
+  _nextTaskRefreshAt = Date.now() + delay
+  return delay
+}
+
+function currentTaskRefreshScope(): string | null {
+  const auth = useAuthStore.getState()
+  const effectiveUserId = auth.getEffectiveUserId()
+  if (!effectiveUserId) return null
+  return `${effectiveUserId}:${auth.viewAll ? 'all' : 'single'}:${auth.viewingAs?.id ?? ''}`
+}
+
+function taskRefreshScopeIsCurrent(scope: string): boolean {
+  return currentTaskRefreshScope() === scope
+}
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
@@ -501,22 +535,27 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
    * - If a refresh is already running, defers to run once more after completion.
    */
   refreshOpsSnapshot: async (reason: string) => {
-    if (_isRefreshing) {
-      _pendingRefresh = true
+    const admission = _refreshCoordinator.admit(reason)
+    if (admission.kind === 'skipped') {
+      console.log(`[ops-sync] Poll skipped (refresh in progress). Reason: ${reason}`)
+      return admission.outcome
+    }
+    if (admission.kind === 'queued') {
       console.log(`[ops-sync] Refresh deferred (in progress). Reason: ${reason}`)
-      return
+      return admission.promise
     }
 
-    _isRefreshing = true
-    set({ isSyncing: true, syncError: null })
+    // Mantém o erro anterior visível enquanto uma nova tentativa está em curso.
+    // Ele só é limpo depois que categorias E tarefas terminarem com sucesso.
+    set({ isSyncing: true })
     console.log(`[ops-sync] Refresh started. Reason: ${reason}`)
 
+    let taskRefreshScope: string | null = null
     try {
       const currentUserId = useAuthStore.getState().getEffectiveUserId()
       if (!currentUserId) {
-        set({ isSyncing: false, syncError: 'Not authenticated' })
-        _isRefreshing = false
-        return
+        set({ isSyncing: false })
+        return 'stale'
       }
       const cleanedUserId = currentUserId.replace(/-/g, '')
       const viewAll = useAuthStore.getState().viewAll
@@ -524,7 +563,13 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       // trocar de conta/impersonação durante os fetches, NÃO gravamos as tasks/seções
       // da conta antiga por cima do estado recém-limpo da nova.
       const reqViewingId = useAuthStore.getState().viewingAs?.id ?? null
-      const reqViewAll = viewAll
+      taskRefreshScope = `${currentUserId}:${viewAll ? 'all' : 'single'}:${reqViewingId ?? ''}`
+      prepareTaskRefreshScope(taskRefreshScope)
+      // O clique manual sempre tenta novamente. Gatilhos automáticos respeitam
+      // backoff para não repetir a consulta pesada a cada polling/realtime quando
+      // o banco já sinalizou timeout.
+      const shouldRefreshTasks =
+        reason === 'manual-sync' || Date.now() >= _nextTaskRefreshAt
 
       // Categorias/notas compartilhadas: aplica fora do modo "Todos" (no "Todos" já
       // trazemos o board inteiro da equipe). INCLUI impersonação: o dono vendo a
@@ -540,19 +585,53 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       type StatusRow = { label: string; color: string; key: string; position: number }
       type TaskRow = { id: string; title: string; status: string; description: string | null; priority: NotePriority | null; position: number | null; updated_at: string | null; due_date: string | null; client_id: string | null; recurrence: Recurrence | null; parent_template_id: string | null }
 
-      // Modo "Todos": busca TODAS as tarefas (a RLS já libera o gestor/dono a ver
-      // tudo). Modo normal: só as MINHAS colunas (status com meu prefixo) OU
-      // atribuídas a mim. A RLS limita ao que o usuário pode ver.
-      const tasksQuery = viewAll
-        ? `tasks?select=id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id&order=title.asc`
-        : `tasks?select=id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id&or=(status.like.USR_${cleanedUserId}_*,assignee_id.eq.${currentUserId})&order=title.asc`
+      const statusData = await opsFetch<StatusRow>(
+        'custom_statuses?select=label,color,key,position&order=position.asc',
+      )
 
-      const [statusData, taskData] = await Promise.all([
-        opsFetch<StatusRow>(
-          'custom_statuses?select=label,color,key,position&order=position.asc'
-        ),
-        opsFetch<TaskRow>(tasksQuery),
-      ])
+      const taskSelect =
+        'id,title,status,description,priority,position,updated_at,due_date,client_id,recurrence,parent_template_id'
+      const ownStatusPrefix = `USR_${cleanedUserId}_`
+      const ownStatusKeys = Array.from(new Set(
+        statusData
+          .filter((row) => row.key.startsWith(ownStatusPrefix))
+          .map((row) => row.key),
+      ))
+
+      // Modo "Todos" preserva a consulta integral. No modo normal, evitamos o
+      // OR com status.like (que força um plano caro sob RLS): buscamos em paralelo
+      // as keys completas que vieram de custom_statuses e as tasks atribuídas ao
+      // usuário, depois deduplicamos por id. As duas rotas continuam passando por
+      // opsFetch, portanto mantêm a validação de geração/identidade da sessão.
+      const taskFetch = !shouldRefreshTasks
+        ? null
+        : viewAll
+          ? opsFetch<TaskRow>(`tasks?select=${taskSelect}&order=title.asc`)
+          : Promise.all([
+              ownStatusKeys.length > 0
+                ? opsFetch<TaskRow>(
+                    `tasks?select=${taskSelect}&status=in.(${ownStatusKeys.map((key) => `"${key}"`).join(',')})&order=title.asc`,
+                  )
+                : Promise.resolve([] as TaskRow[]),
+              opsFetch<TaskRow>(
+                `tasks?select=${taskSelect}&assignee_id=eq.${currentUserId}&order=title.asc`,
+              ),
+            ]).then(([statusTasks, assignedTasks]) => {
+              const taskById = new Map<string, TaskRow>()
+              for (const task of statusTasks) taskById.set(task.id, task)
+              for (const task of assignedTasks) taskById.set(task.id, task)
+              return Array.from(taskById.values()).sort((a, b) => a.title.localeCompare(b.title))
+            })
+
+      // Categorias e tarefas são independentes: a falha/timeout de tasks nunca
+      // impede custom_statuses de ser publicado. A captura transforma rejeição
+      // em valor e preserva o backoff/estado parcial existentes.
+      const taskRequest = taskFetch
+        ? taskFetch.then(
+            (data) => ({ ok: true as const, data }),
+            (error: unknown) => ({ ok: false as const, error: opsErrorMessage(error) }),
+          )
+        : null
 
       const seen = new Set<string>()
       const newSections: OpsSection[] = []
@@ -646,10 +725,60 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
         ownKeys.add(row.key)
       }
 
+      // Publica as categorias assim que a consulta leve termina, sem esperar a
+      // consulta de tasks. A identidade é revalidada antes para não misturar
+      // snapshots quando a conta/visão muda durante os awaits.
+      if (!taskRefreshScopeIsCurrent(taskRefreshScope)) {
+        console.log('[ops-sync] Categorias descartadas: a conta/visão mudou durante o refresh.')
+        return 'stale'
+      }
+
+      const currentActive = get().activeSectionId
+      const stillExists =
+        currentActive != null &&
+        (currentActive === '__sem_secao__' ||
+          newSections.some((s) => s.key_suffix === currentActive))
+
+      set({
+        sections: newSections,
+        activeSectionId: stillExists ? currentActive : null,
+        isSyncing: taskRequest !== null,
+      })
+
+      if (!taskRequest) {
+        const retryInSeconds = Math.max(1, Math.ceil((_nextTaskRefreshAt - Date.now()) / 1000))
+        console.log(
+          `[ops-sync] Categorias atualizadas; tasks preservadas durante backoff (${retryInSeconds}s).`,
+        )
+        return 'partial'
+      }
+
+      const taskResult = await taskRequest
+      if (!taskResult.ok) {
+        if (!taskRefreshScopeIsCurrent(taskRefreshScope)) {
+          console.log('[ops-sync] Erro de tasks descartado: a conta/visão mudou durante o refresh.')
+          return 'stale'
+        }
+        const retryDelay = registerTaskRefreshFailure(taskRefreshScope)
+        const syncError =
+          'As categorias foram atualizadas, mas as notas não puderam ser recarregadas. ' +
+          'O último conteúdo disponível foi preservado. Uma nova tentativa automática será feita em breve. ' +
+          `Detalhe: ${taskResult.error}`
+        console.error(
+          `[ops-sync] Tasks refresh failed; backoff mínimo de ${retryDelay / 1000}s:`,
+          taskResult.error,
+        )
+        set({ syncError, isSyncing: false })
+        return 'partial'
+      }
+
+      const taskData = taskResult.data
+
       // ── Tasks compartilhadas comigo ──────────────────────────────────────
       // (1) tasks nas categorias compartilhadas (status === key completa)
       // (2) tasks vinculadas às notas compartilhadas comigo
       const extraTaskData: TaskRow[] = []
+      let sharedTaskError: string | null = null
       if (includeShared) {
         if (sharedCatKeys.length > 0) {
           const keyList = sharedCatKeys.map((k) => `"${k}"`).join(',')
@@ -660,11 +789,12 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
             extraTaskData.push(...rows)
           } catch (e) {
             console.warn('[ops-sync] tasks de categorias compartilhadas:', e)
+            sharedTaskError = opsErrorMessage(e)
           }
         }
 
         const sharedNoteIds = Object.keys(useSharingStore.getState().sharedWithMeNotes)
-        if (sharedNoteIds.length > 0) {
+        if (sharedTaskError === null && sharedNoteIds.length > 0) {
           try {
             // Resolve os task_ids das notas compartilhadas comigo (RLS autoriza o SELECT)
             const noteIdList = sharedNoteIds.map((id) => `"${id}"`).join(',')
@@ -683,8 +813,29 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
             }
           } catch (e) {
             console.warn('[ops-sync] tasks de notas compartilhadas:', e)
+            sharedTaskError = opsErrorMessage(e)
           }
         }
+      }
+
+      // Um snapshot sem as tasks compartilhadas também é incompleto. Mantemos o
+      // último conjunto inteiro em vez de apagar silenciosamente cartões/notas.
+      if (sharedTaskError) {
+        if (!taskRefreshScopeIsCurrent(taskRefreshScope)) {
+          console.log('[ops-sync] Erro de compartilhamento descartado: a conta/visão mudou durante o refresh.')
+          return 'stale'
+        }
+        const retryDelay = registerTaskRefreshFailure(taskRefreshScope)
+        const syncError =
+          'As categorias foram atualizadas, mas as notas compartilhadas não puderam ser recarregadas. ' +
+          'O último conteúdo disponível foi preservado. Uma nova tentativa automática será feita em breve. ' +
+          `Detalhe: ${sharedTaskError}`
+        console.error(
+          `[ops-sync] Shared tasks refresh failed; backoff mínimo de ${retryDelay / 1000}s:`,
+          sharedTaskError,
+        )
+        set({ syncError, isSyncing: false })
+        return 'partial'
       }
 
       // Merge dedup por id (próprias + compartilhadas)
@@ -698,25 +849,18 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       })) as OpsTask[]
 
       // Troca de conta/visão durante os fetches invalida este snapshot.
-      const authNow = useAuthStore.getState()
-      if ((authNow.viewingAs?.id ?? null) !== reqViewingId || authNow.viewAll !== reqViewAll) {
+      if (!taskRefreshScopeIsCurrent(taskRefreshScope)) {
         console.log('[ops-sync] Snapshot descartado: a conta/visão mudou durante o refresh.')
-        set({ isSyncing: false })
-        _isRefreshing = false
-        return
+        return 'stale'
       }
 
-      const currentActive = get().activeSectionId
-      const stillExists =
-        currentActive != null &&
-        (currentActive === '__sem_secao__' ||
-          newSections.some((s) => s.key_suffix === currentActive))
-
+      resetTaskRefreshBackoff(taskRefreshScope)
       set({
         sections: newSections,
         tasks: newTasks,
         activeSectionId: stillExists ? currentActive : null,
         isSyncing: false,
+        syncError: null,
         lastSyncedAt: new Date().toISOString(),
       })
 
@@ -741,21 +885,27 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
             ? ` activeSectionId "${currentActive}" cleared (section removed).`
             : ''),
       )
+      return 'complete'
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error'
+      if (taskRefreshScope && !taskRefreshScopeIsCurrent(taskRefreshScope)) {
+        console.log('[ops-sync] Falha descartada: a conta/visão mudou durante o refresh.')
+        return 'stale'
+      }
+      const detail = opsErrorMessage(err)
+      const message =
+        'Não foi possível atualizar as categorias agora. A última lista disponível foi preservada. ' +
+        `Detalhe: ${detail}`
       console.error('[ops-sync] Refresh failed:', message)
       set({ syncError: message, isSyncing: false })
+      return 'partial'
     } finally {
-      const failed = get().syncError !== null
-      _isRefreshing = false
-
-      if (_pendingRefresh && !failed) {
-        _pendingRefresh = false
-        console.log('[ops-sync] Executing deferred refresh…')
-        void get().refreshOpsSnapshot('deferred')
-      } else {
-        _pendingRefresh = false
-      }
+      // Uma tentativa antiga com erro nunca descarta a intenção pendente. O
+      // coordenador preserva o motivo prioritário (manual/troca de visão) e o
+      // Promise do chamador só resolve após esse ciclo efetivamente terminar.
+      _refreshCoordinator.finish((pendingReason) => {
+        console.log(`[ops-sync] Executing deferred refresh. Reason: ${pendingReason}`)
+        return get().refreshOpsSnapshot(pendingReason)
+      })
     }
   },
 
@@ -1096,8 +1246,8 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       // garante que a reconstrução por creator/share encontre as tasks/notas de
       // terceiro já carregadas (bloco de preservação) — sem o piscar de antes.
       void useSharingStore.getState().loadShares().then(() => {
-        void get().refreshOpsSnapshot('realtime:shares').then(() => {
-          void useNotesStore.getState().loadNotes()
+        void get().refreshOpsSnapshot('realtime:shares').then((outcome) => {
+          if (outcome === 'complete') void useNotesStore.getState().loadNotes()
         })
       })
     }
@@ -1175,6 +1325,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       clearTimeout(_retryTimer)
       _retryTimer = null
     }
+    resetTaskRefreshBackoff()
 
     const channel = get().realtimeChannel
     if (channel) {
@@ -1189,7 +1340,7 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
   /**
    * Auto‑reconciliation:
    * - Refresh on window focus / visibility return.
-   * - Polling every 10 s to keep data fresh in background.
+   * - Visible-only polling every 60 s as a backstop for Realtime.
    * Returns a cleanup function to be called on unmount.
    */
   setupAutoReconciliation: () => {
@@ -1219,8 +1370,8 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
       if (document.visibilityState !== 'visible') return
       reviveRealtime(false)
       void useSharingStore.getState().loadShares().then(() => {
-        void get().refreshOpsSnapshot('window-focus').then(() => {
-          void useNotesStore.getState().loadNotes()
+        void get().refreshOpsSnapshot('window-focus').then((outcome) => {
+          if (outcome === 'complete') void useNotesStore.getState().loadNotes()
         })
       })
     }
@@ -1235,9 +1386,10 @@ export const useOpsStore = create<OpsState>()((set, get) => ({
     window.electronAPI?.power?.onResume(onPowerResume)
 
     const pollingTimer = setInterval(() => {
-      reviveRealtime(false) // rede de segurança: reconecta em ≤10s se o socket caiu calado
-      void get().refreshOpsSnapshot('polling-10s')
-    }, 10_000)
+      if (document.visibilityState !== 'visible') return
+      reviveRealtime(false) // rede de segurança: tenta reconectar no backstop de 60s
+      void get().refreshOpsSnapshot('polling-visible-60s')
+    }, 60_000)
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)

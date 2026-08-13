@@ -1,6 +1,6 @@
 {
   "name": "ops-notas",
-  "version": "1.4.52",
+  "version": "1.4.53",
   "description": "Mileto Notas — App desktop de bloco de notas colaborativo",
   "main": "dist-electron/main.js",
   "author": "Mileto",
@@ -10,7 +10,8 @@
     "dev": "cross-env ELECTRON_RUN_AS_NODE= vite",
     "build": "tsc && vite build",
     "dist": "npm run build && electron-builder",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:contract": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

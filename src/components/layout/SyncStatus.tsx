@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
-import { Cloud, CloudOff, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Cloud, CloudOff, RefreshCw } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore } from '../../stores/ops-store'
 
 /**
  * Indicador de sincronização com o Mileto Ops (ao lado do sino). Clicar força a
- * sincronização (e reconecta o tempo real). Três estados simples:
+ * sincronização (e reconecta o tempo real). Quatro estados simples:
  *  - live    → ☁️ nuvem: tudo sincronizado.
  *  - pending → 🔄 duas setas girando: salvando / atualizando.
+ *  - error   → ⚠️ categorias disponíveis, mas notas temporariamente desatualizadas.
  *  - offline → ☁️⃠ nuvem cortada: sem internet (alterações ficam salvas localmente).
  */
 export default function SyncStatus() {
   const pendingSync = useNotesStore((s) => s.pendingSync)
   const realtimeStatus = useOpsStore((s) => s.realtimeStatus)
+  const isOpsSyncing = useOpsStore((s) => s.isSyncing)
+  const syncError = useOpsStore((s) => s.syncError)
   const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true))
   const [syncing, setSyncing] = useState(false)
 
@@ -29,10 +32,12 @@ export default function SyncStatus() {
 
   // A nuvem reflete TAMBÉM a saúde do tempo real: se o canal não está 'live', mostra
   // "reconectando" (âmbar) em vez de fingir que está tudo sincronizado (verde).
-  const state: 'offline' | 'pending' | 'live' =
+  const state: 'offline' | 'error' | 'pending' | 'live' =
     !online ? 'offline'
-      : (syncing || pendingSync > 0 || realtimeStatus !== 'live') ? 'pending'
-        : 'live'
+      : (syncing || isOpsSyncing) ? 'pending'
+        : syncError ? 'error'
+          : (pendingSync > 0 || realtimeStatus !== 'live') ? 'pending'
+            : 'live'
 
   const cfg = {
     offline: {
@@ -40,6 +45,12 @@ export default function SyncStatus() {
       color: '#ef4444',
       spin: false,
       title: 'Sem conexão — suas alterações ficam salvas localmente e sobem quando a internet voltar',
+    },
+    error: {
+      Icon: AlertTriangle,
+      color: '#f59e0b',
+      spin: false,
+      title: `${syncError} Clique para tentar novamente agora.`,
     },
     pending: {
       Icon: RefreshCw,
@@ -69,8 +80,12 @@ export default function SyncStatus() {
         useOpsStore.getState().subscribeToOpsChanges()
       }
       await useNotesStore.getState().flushPendingDrafts()
-      await useOpsStore.getState().refreshOpsSnapshot('manual-sync')
-      await useNotesStore.getState().loadNotes()
+      const outcome = await useOpsStore.getState().refreshOpsSnapshot('manual-sync')
+      // loadNotes recompõe parte da visão a partir das tasks. Só roda quando a
+      // tentativa trouxe um snapshot completo e válido.
+      if (outcome === 'complete') {
+        await useNotesStore.getState().loadNotes()
+      }
       await useNotesStore.getState().refreshPendingSync()
     } catch {
       // best-effort — o estado volta a refletir a realidade no próximo gatilho
@@ -79,20 +94,38 @@ export default function SyncStatus() {
     }
   }
 
+  const errorBackground = 'rgba(245, 158, 11, 0.12)'
+
   return (
     <button
       onClick={() => void forceSync()}
-      className="titlebar-no-drag flex h-7 w-8 items-center justify-center rounded-md"
-      style={{ color: cfg.color, transition: 'background-color 140ms' }}
-      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#232323' }}
-      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
+      className={`titlebar-no-drag flex h-7 items-center justify-center rounded-md ${state === 'error' ? 'gap-1.5 px-2' : 'w-8'}`}
+      style={{
+        color: cfg.color,
+        backgroundColor: state === 'error' ? errorBackground : 'transparent',
+        transition: 'background-color 140ms',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = state === 'error'
+          ? 'rgba(245, 158, 11, 0.2)'
+          : '#232323'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = state === 'error' ? errorBackground : 'transparent'
+      }}
       title={cfg.title}
+      aria-label={state === 'error' ? 'Notas desatualizadas. Tentar novamente' : cfg.title}
     >
       <Icon
         size={15}
         className={cfg.spin ? 'animate-spin' : undefined}
         style={cfg.spin ? { animationDuration: '1s' } : undefined}
       />
+      {state === 'error' && (
+        <span className="whitespace-nowrap text-[10.5px] font-medium">
+          Notas desatualizadas · tentar
+        </span>
+      )}
     </button>
   )
 }
