@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { FormEvent } from 'react'
-import { Mail, Lock, Eye, EyeOff, Minus, Maximize2, X, ShieldCheck, ArrowLeft } from 'lucide-react'
+import { Mail, Lock, Eye, EyeOff, Minus, Maximize2, X, ShieldCheck, ArrowLeft, Copy, Check } from 'lucide-react'
 import { useAuthStore } from '../stores/auth-store'
 import Particles from '../components/ui/Particles'
 
@@ -11,12 +11,17 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null)
   const [isPending, setIsPending] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [secretCopied, setSecretCopied] = useState(false)
 
   const signIn = useAuthStore((state) => state.signIn)
+  const startMfaEnrollment = useAuthStore((state) => state.startMfaEnrollment)
   const verifyMfa = useAuthStore((state) => state.verifyMfa)
   const cancelMfa = useAuthStore((state) => state.cancelMfa)
   const mfaRequired = useAuthStore((state) => state.mfaRequired)
+  const mfaSetupRequired = useAuthStore((state) => state.mfaSetupRequired)
+  const mfaEnrollment = useAuthStore((state) => state.mfaEnrollment)
   const authError = useAuthStore((state) => state.authError)
+  const hasPendingSession = useAuthStore((state) => !!state.user && !state.isAuthenticated)
   const emailRef = useRef<HTMLInputElement>(null)
   const mfaCodeRef = useRef<HTMLInputElement>(null)
 
@@ -25,8 +30,10 @@ export default function Login() {
   }, [])
 
   useEffect(() => {
-    if (mfaRequired) mfaCodeRef.current?.focus()
-  }, [mfaRequired])
+    if (mfaRequired || mfaEnrollment) mfaCodeRef.current?.focus()
+  }, [mfaRequired, mfaEnrollment])
+
+  const securityStep = mfaRequired || mfaSetupRequired
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -70,6 +77,16 @@ export default function Login() {
     }
   }
 
+  const handleStartEnrollment = async (e: FormEvent) => {
+    e.preventDefault()
+    if (isPending) return
+    setError(null)
+    setIsPending(true)
+    const result = await startMfaEnrollment()
+    setIsPending(false)
+    if (result.error) setError(result.error)
+  }
+
   const handleCancelMfa = async () => {
     if (isPending) return
     setIsPending(true)
@@ -77,6 +94,7 @@ export default function Login() {
     await cancelMfa()
     setMfaCode('')
     setPassword('')
+    setSecretCopied(false)
     setIsPending(false)
     requestAnimationFrame(() => emailRef.current?.focus())
   }
@@ -131,6 +149,9 @@ export default function Login() {
           border: 'none',
           borderRadius: '12px',
           padding: '52px 48px',
+          maxWidth: securityStep ? 480 : 420,
+          maxHeight: 'calc(100vh - 64px)',
+          overflowY: 'auto',
           boxShadow:
             '0 0 0 1.5px rgba(16, 185, 129, 0.3), 0 0 16px rgba(16, 185, 129, 0.1), 0 8px 32px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(16, 185, 129, 0.08)',
         }}
@@ -147,23 +168,92 @@ export default function Login() {
               className="font-semibold text-zinc-100"
               style={{ fontSize: '24px' }}
             >
-              {mfaRequired ? 'Verificação em duas etapas' : 'Ops Notas'}
+              {mfaSetupRequired ? 'Proteja sua conta' : mfaRequired ? 'Verificação em duas etapas' : 'Ops Notas'}
             </h1>
             <p className="mt-1 text-zinc-500" style={{ fontSize: '14px' }}>
-              {mfaRequired ? 'Digite o código de 6 dígitos' : 'Entre com sua conta'}
+              {mfaSetupRequired
+                ? (mfaEnrollment ? 'Escaneie o QR Code e confirme' : 'Configure a verificação em duas etapas')
+                : mfaRequired ? 'Digite o código de 6 dígitos' : 'Entre com sua conta'}
             </p>
             <p className="mt-1 text-zinc-600" style={{ fontSize: '13px' }}>
-              {mfaRequired
-                ? 'Use o código atual do seu aplicativo autenticador'
+              {securityStep
+                ? (mfaSetupRequired
+                    ? 'Obrigatório para proteger o acesso da equipe'
+                    : 'Use o código atual do seu aplicativo autenticador')
                 : 'Bloco de notas colaborativo da sua equipe'}
             </p>
           </div>
         </div>
 
         {/* Formulário */}
-        <form onSubmit={mfaRequired ? handleMfaSubmit : handleSubmit} noValidate>
-          {mfaRequired ? (
+        <form
+          onSubmit={mfaSetupRequired && !mfaEnrollment
+            ? handleStartEnrollment
+            : securityStep ? handleMfaSubmit : handleSubmit}
+          noValidate
+        >
+          {securityStep ? (
             <div style={{ marginBottom: '40px' }}>
+              {mfaSetupRequired && !mfaEnrollment && (
+                <div
+                  className="mb-5 rounded-lg text-zinc-400"
+                  style={{
+                    padding: '14px 16px',
+                    backgroundColor: 'rgba(16,185,129,0.08)',
+                    border: '1px solid rgba(16,185,129,0.22)',
+                    fontSize: '13px',
+                    lineHeight: 1.55,
+                  }}
+                >
+                  Use o Google Authenticator, Microsoft Authenticator, 1Password ou Authy.
+                  O QR Code será mostrado somente durante este cadastro.
+                </div>
+              )}
+
+              {mfaSetupRequired && mfaEnrollment && (
+                <div className="mb-5 flex flex-col items-center gap-3">
+                  <div
+                    className="rounded-xl bg-white"
+                    style={{ padding: 10, boxShadow: '0 0 0 1px rgba(16,185,129,0.28)' }}
+                  >
+                    <img
+                      src={mfaEnrollment.qrCode}
+                      alt="QR Code para cadastrar o aplicativo autenticador"
+                      style={{ width: 176, height: 176, display: 'block' }}
+                    />
+                  </div>
+                  <div className="w-full">
+                    <p className="mb-1.5 text-zinc-500" style={{ fontSize: '12px' }}>
+                      Não consegue escanear? Use esta chave manual:
+                    </p>
+                    <div
+                      className="flex items-center gap-2 rounded-lg"
+                      style={{ padding: '8px 10px', backgroundColor: '#27272a', border: '1px solid #3f3f46' }}
+                    >
+                      <code className="min-w-0 flex-1 break-all text-emerald-300" style={{ fontSize: '12px', letterSpacing: '0.08em' }}>
+                        {mfaEnrollment.secret}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(mfaEnrollment.secret).then(() => {
+                            setSecretCopied(true)
+                            window.setTimeout(() => setSecretCopied(false), 1600)
+                          }).catch(() => setError('Não foi possível copiar. Selecione a chave manualmente.'))
+                        }}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-emerald-300"
+                        aria-label="Copiar chave manual"
+                        title="Copiar chave manual"
+                      >
+                        {secretCopied ? <Check size={15} /> : <Copy size={15} />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {(mfaRequired || mfaEnrollment) && (
+                <>
               <label
                 htmlFor="mfa-code"
                 className="mb-1.5 block font-medium text-zinc-400"
@@ -206,8 +296,12 @@ export default function Login() {
                 />
               </div>
               <p id="mfa-code-help" className="mt-2 text-zinc-600" style={{ fontSize: '12px' }}>
-                O código muda a cada 30 segundos.
+                {mfaSetupRequired
+                  ? 'Depois de escanear, digite o código atual para ativar e entrar.'
+                  : 'O código muda a cada 30 segundos.'}
               </p>
+                </>
+              )}
             </div>
           ) : (
             <>
@@ -305,7 +399,7 @@ export default function Login() {
           {/* Botão */}
           <button
             type="submit"
-            disabled={isPending || (mfaRequired && mfaCode.length !== 6)}
+            disabled={isPending || ((mfaRequired || !!mfaEnrollment) && mfaCode.length !== 6)}
             className="flex w-full items-center justify-center rounded-lg font-medium text-white transition-all duration-150 hover:bg-emerald-500 hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:scale-100"
             style={{
               height: '44px',
@@ -315,11 +409,13 @@ export default function Login() {
             }}
           >
             {isPending
-              ? (mfaRequired ? 'Verificando...' : 'Entrando...')
-              : (mfaRequired ? 'Confirmar código' : 'Entrar')}
+              ? (securityStep ? (mfaEnrollment ? 'Ativando...' : mfaRequired ? 'Verificando...' : 'Gerando...') : 'Entrando...')
+              : (mfaSetupRequired
+                  ? (mfaEnrollment ? 'Ativar e continuar' : 'Gerar QR Code')
+                  : mfaRequired ? 'Confirmar código' : 'Entrar')}
           </button>
 
-          {mfaRequired && (
+          {(securityStep || hasPendingSession) && (
             <button
               type="button"
               onClick={handleCancelMfa}
@@ -328,7 +424,7 @@ export default function Login() {
               style={{ height: '40px', fontSize: '13px' }}
             >
               <ArrowLeft size={15} />
-              Voltar para o login
+              {securityStep ? 'Voltar para o login' : 'Sair desta conta'}
             </button>
           )}
         </form>

@@ -22,10 +22,14 @@ interface AuthState {
   isAuthenticated: boolean
   /** Sessão de senha válida, mas ainda aguardando o segundo fator TOTP. */
   mfaRequired: boolean
+  /** Conta interna AAL1 ainda sem TOTP verificado; precisa cadastrar um antes de entrar. */
+  mfaSetupRequired: boolean
   /** Erro de segurança da sessão que precisa aparecer mesmo fora de um submit. */
   authError: string | null
   /** Fator selecionado para o desafio. Mantido no store para não ir para a UI. */
   pendingMfaFactorId: string | null
+  /** Segredo efêmero do cadastro TOTP. Nunca é persistido nem enviado a logs. */
+  mfaEnrollment: { qrCode: string; secret: string } | null
   /** Todos os perfis da equipe (para o seletor de contas). */
   teamProfiles: Profile[]
   /** Conta que está sendo visualizada (impersonação). null = a própria conta. */
@@ -34,6 +38,7 @@ interface AuthState {
   viewAll: boolean
   initialize: () => Promise<void>
   signIn: (email: string, password: string) => Promise<{ error: string | null; mfaRequired: boolean }>
+  startMfaEnrollment: () => Promise<{ error: string | null }>
   verifyMfa: (code: string) => Promise<{ error: string | null }>
   cancelMfa: () => Promise<void>
   signOut: () => Promise<void>
@@ -117,23 +122,49 @@ export const useAuthStore = create<AuthState>()((set, get) => {
   let authEvaluationGeneration = 0
   let authListenerRegistered = false
   let initializationPromise: Promise<void> | null = null
+  let mfaEnrollmentPromise: Promise<{ error: string | null }> | null = null
+  let mfaVerificationGeneration = 0
+  let mfaVerificationAttempt: {
+    id: number
+    userId: string
+    factorId: string
+  } | null = null
+  let sessionCleanupInProgress = false
 
   type SessionGateResult = {
     authenticated: boolean
     mfaRequired: boolean
+    mfaSetupRequired: boolean
     error: string | null
+  }
+
+  type PrincipalType = 'staff' | 'platform' | 'client'
+
+  const principalType = (session: Session): PrincipalType | null => {
+    const principal = session.user.app_metadata?.principal_type
+    return principal === 'staff' || principal === 'platform' || principal === 'client'
+      ? principal
+      : null
+  }
+
+  const isInternalPrincipal = (session: Session): boolean => {
+    const principal = principalType(session)
+    return principal === 'staff' || principal === 'platform'
   }
 
   /** Limpeza local síncrona e idempotente; não chama nenhum método de auth. */
   const cleanupSessionState = (allowOpsSessionBootstrap = false) => {
+    ++mfaVerificationGeneration
     bumpViewGeneration()
     set({
       user: null,
       profile: null,
       isAuthenticated: false,
       mfaRequired: false,
+      mfaSetupRequired: false,
       authError: null,
       pendingMfaFactorId: null,
+      mfaEnrollment: null,
       viewingAs: null,
       viewAll: false,
       teamProfiles: [],
@@ -192,17 +223,23 @@ export const useAuthStore = create<AuthState>()((set, get) => {
       realtimeChannel: null,
       realtimeStatus: 'connecting',
     })
+    mfaEnrollmentPromise = null
+    mfaVerificationAttempt = null
   }
 
   const loadProfileForGate = async (
     userId: string,
     evaluationId: number,
-  ): Promise<{ profile: Profile | null; stale: boolean }> => {
+  ): Promise<{ profile: Profile | null; stale: boolean; error: string | null }> => {
     const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single()
     const stale = evaluationId !== authEvaluationGeneration || get().user?.id !== userId
-    if (stale) return { profile: null, stale: true }
+    if (stale) return { profile: null, stale: true, error: null }
     if (error) console.error('[auth] loadProfile:', error.message)
-    return { profile: data ? data as Profile : null, stale: false }
+    return {
+      profile: data ? data as Profile : null,
+      stale: false,
+      error: error ? 'Não foi possível validar o perfil desta conta. Tente entrar novamente.' : null,
+    }
   }
 
   const publishAuthenticatedSession = async (
@@ -211,41 +248,93 @@ export const useAuthStore = create<AuthState>()((set, get) => {
   ): Promise<boolean> => {
     const loaded = await loadProfileForGate(session.user.id, evaluationId)
     if (loaded.stale) return false
+    if (loaded.error || !loaded.profile) {
+      set({
+        user: session.user,
+        profile: null,
+        isAuthenticated: false,
+        mfaRequired: false,
+        mfaSetupRequired: false,
+        pendingMfaFactorId: null,
+        mfaEnrollment: null,
+        authError: loaded.error ?? 'Esta conta não possui um perfil interno válido.',
+      })
+      return false
+    }
     set({
       user: session.user,
       profile: loaded.profile,
       isAuthenticated: true,
       mfaRequired: false,
+      mfaSetupRequired: false,
       pendingMfaFactorId: null,
+      mfaEnrollment: null,
       authError: null,
     })
     return true
   }
 
   /**
-   * Decide se uma sessão pode abrir o app. A existência da sessão de senha (AAL1)
-   * nunca é suficiente quando o Supabase informa que ela pode/deve subir para AAL2.
+   * Decide se uma sessão pode abrir o app. Staff/platform sempre exige AAL2,
+   * inclusive quando ainda não existe fator (nesse caso abre o cadastro TOTP).
    */
   const evaluateSession = async (
     session: Session,
     evaluationId = ++authEvaluationGeneration,
   ): Promise<SessionGateResult> => {
+    const currentGate = (): SessionGateResult => ({
+      authenticated: get().isAuthenticated,
+      mfaRequired: get().mfaRequired,
+      mfaSetupRequired: get().mfaSetupRequired,
+      error: null,
+    })
+
     try {
       if (evaluationId !== authEvaluationGeneration) {
-        return { authenticated: false, mfaRequired: false, error: null }
+        return currentGate()
       }
       if (get().user?.id !== session.user.id) {
-        set({ user: session.user, profile: null, isAuthenticated: false })
+        set({
+          user: session.user,
+          profile: null,
+          isAuthenticated: false,
+          mfaRequired: false,
+          mfaSetupRequired: false,
+          pendingMfaFactorId: null,
+          mfaEnrollment: null,
+        })
       }
+
+      // A classificação vem de app_metadata assinada pelo servidor. user_metadata
+      // é editável pelo cliente e nunca pode decidir acesso ao aplicativo interno.
+      const principal = principalType(session)
+      if (!principal || principal === 'client') {
+        const message = principal === 'client'
+          ? 'Esta conta de cliente deve acessar o Portal Mileto Ops; o Notas é exclusivo da equipe interna.'
+          : 'Esta conta não possui uma classificação de acesso confiável.'
+        set({
+          user: session.user,
+          profile: null,
+          isAuthenticated: false,
+          mfaRequired: false,
+          mfaSetupRequired: false,
+          pendingMfaFactorId: null,
+          mfaEnrollment: null,
+          authError: message,
+        })
+        return {
+          authenticated: false,
+          mfaRequired: false,
+          mfaSetupRequired: false,
+          error: message,
+        }
+      }
+
       const { data: assurance, error: assuranceError } =
         await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
 
       if (evaluationId !== authEvaluationGeneration) {
-        return {
-          authenticated: get().isAuthenticated,
-          mfaRequired: get().mfaRequired,
-          error: null,
-        }
+        return currentGate()
       }
 
       if (assuranceError || !assurance) {
@@ -257,83 +346,79 @@ export const useAuthStore = create<AuthState>()((set, get) => {
           profile: null,
           isAuthenticated: false,
           mfaRequired: false,
+          mfaSetupRequired: false,
           pendingMfaFactorId: null,
+          mfaEnrollment: null,
           authError: message,
         })
-        return { authenticated: false, mfaRequired: false, error: message }
+        return { authenticated: false, mfaRequired: false, mfaSetupRequired: false, error: message }
       }
 
       // Uma sessão que já possui AAL2 não deve pedir o código novamente.
       if (assurance.currentLevel === 'aal2') {
         const authenticated = await publishAuthenticatedSession(session, evaluationId)
-        return { authenticated, mfaRequired: false, error: null }
+        return {
+          authenticated,
+          mfaRequired: false,
+          mfaSetupRequired: false,
+          error: authenticated ? null : get().authError,
+        }
       }
 
-      // nextLevel=aal2 significa que há fator verificado e a sessão AAL1 não pode
-      // atravessar o gate. listFactors().totp contém somente fatores verificados.
-      if (assurance.nextLevel === 'aal2') {
-        const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors()
+      // AAL1 nunca atravessa o gate interno. A lista de fatores decide entre
+      // desafiar um autenticador existente e cadastrar o primeiro.
+      const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors()
+      if (evaluationId !== authEvaluationGeneration) return currentGate()
 
-        if (evaluationId !== authEvaluationGeneration) {
-          return {
-            authenticated: get().isAuthenticated,
-            mfaRequired: get().mfaRequired,
-            error: null,
-          }
-        }
+      if (factorsError || !factors) {
+        const message = factorsError
+          ? translateMfaError(factorsError.message)
+          : 'Não foi possível consultar o autenticador desta conta.'
+        set({
+          user: session.user,
+          profile: null,
+          isAuthenticated: false,
+          mfaRequired: false,
+          mfaSetupRequired: false,
+          pendingMfaFactorId: null,
+          mfaEnrollment: null,
+          authError: message,
+        })
+        return { authenticated: false, mfaRequired: false, mfaSetupRequired: false, error: message }
+      }
 
-        const sessionTotp = session.user.factors?.find(
-          (factor) => factor.factor_type === 'totp' && factor.status === 'verified',
-        )
-        const factorId = factors?.totp[0]?.id ?? sessionTotp?.id ?? null
+      const verifiedFactor = factors.totp
+        .filter((factor) => factor.status === 'verified')
+        .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0]
 
-        if (factorsError && !factorId) {
-          const message = translateMfaError(factorsError.message)
-          set({
-            user: session.user,
-            profile: null,
-            isAuthenticated: false,
-            mfaRequired: false,
-            pendingMfaFactorId: null,
-            authError: message,
-          })
-          return { authenticated: false, mfaRequired: false, error: message }
-        }
-
-        if (!factorId) {
-          const message = 'Esta conta exige um segundo fator TOTP, mas nenhum autenticador compatível foi encontrado.'
-          set({
-            user: session.user,
-            profile: null,
-            isAuthenticated: false,
-            mfaRequired: true,
-            pendingMfaFactorId: null,
-            authError: message,
-          })
-          return { authenticated: false, mfaRequired: true, error: message }
-        }
-
+      if (verifiedFactor) {
         set({
           user: session.user,
           profile: null,
           isAuthenticated: false,
           mfaRequired: true,
-          pendingMfaFactorId: factorId,
+          mfaSetupRequired: false,
+          pendingMfaFactorId: verifiedFactor.id,
+          mfaEnrollment: null,
           authError: null,
         })
-        return { authenticated: false, mfaRequired: true, error: null }
+        return { authenticated: false, mfaRequired: true, mfaSetupRequired: false, error: null }
       }
 
-      // Conta sem fator MFA: preserva o fluxo atual de senha.
-      const authenticated = await publishAuthenticatedSession(session, evaluationId)
-      return { authenticated, mfaRequired: false, error: null }
+      set({
+        user: session.user,
+        profile: null,
+        isAuthenticated: false,
+        mfaRequired: false,
+        mfaSetupRequired: true,
+        pendingMfaFactorId: null,
+        mfaEnrollment: null,
+        authError: null,
+      })
+      return { authenticated: false, mfaRequired: false, mfaSetupRequired: true, error: null }
     } catch (error) {
       if (evaluationId !== authEvaluationGeneration) {
-        return {
-          authenticated: get().isAuthenticated,
-          mfaRequired: get().mfaRequired,
-          error: null,
-        }
+        return currentGate()
       }
       const message = translateMfaError(error instanceof Error ? error.message : String(error))
       set({
@@ -341,10 +426,12 @@ export const useAuthStore = create<AuthState>()((set, get) => {
         profile: null,
         isAuthenticated: false,
         mfaRequired: false,
+        mfaSetupRequired: false,
         pendingMfaFactorId: null,
+        mfaEnrollment: null,
         authError: message,
       })
-      return { authenticated: false, mfaRequired: false, error: message }
+      return { authenticated: false, mfaRequired: false, mfaSetupRequired: false, error: message }
     }
   }
 
@@ -353,12 +440,28 @@ export const useAuthStore = create<AuthState>()((set, get) => {
     authListenerRegistered = true
 
     supabase.auth.onAuthStateChange((event, session) => {
+      const activeVerification = mfaVerificationAttempt
+      if (
+        event === 'MFA_CHALLENGE_VERIFIED' &&
+        activeVerification &&
+        session?.user.id === activeVerification.userId &&
+        get().pendingMfaFactorId === activeVerification.factorId
+      ) {
+        // verifyMfa revalida a resposta e publica a sessão AAL2. Evita uma segunda
+        // avaliação concorrente limpar o factorId antes dessas verificações.
+        return
+      }
+
       const evaluationId = ++authEvaluationGeneration
 
       if (event === 'SIGNED_OUT' || !session) {
         cleanupSessionState()
         return
       }
+
+      // Ignora TOKEN_REFRESHED/MFA_CHALLENGE_VERIFIED tardios enquanto um logout
+      // explícito remove o fator incompleto e encerra a sessão no servidor.
+      if (sessionCleanupInProgress) return
 
       // Também cobre troca de conta propagada por outra janela/aba sem um
       // SIGNED_OUT intermediário: nenhum snapshot da identidade anterior sobrevive.
@@ -383,8 +486,10 @@ export const useAuthStore = create<AuthState>()((set, get) => {
   isLoading: true,
   isAuthenticated: false,
   mfaRequired: false,
+  mfaSetupRequired: false,
   authError: null,
   pendingMfaFactorId: null,
+  mfaEnrollment: null,
   teamProfiles: [],
   viewingAs: null,
   viewAll: false,
@@ -443,12 +548,95 @@ export const useAuthStore = create<AuthState>()((set, get) => {
       }
 
       const gate = await evaluateSession(data.session)
-      return { error: gate.error, mfaRequired: gate.mfaRequired }
+      return { error: gate.error, mfaRequired: gate.mfaRequired || gate.mfaSetupRequired }
     } catch (error) {
       return {
         error: translateAuthError(error instanceof Error ? error.message : String(error)),
         mfaRequired: false,
       }
+    }
+  },
+
+  startMfaEnrollment: async () => {
+    if (mfaEnrollmentPromise) return mfaEnrollmentPromise
+
+    const generation = authEvaluationGeneration
+    const userId = get().user?.id
+    if (!userId || !get().mfaSetupRequired || get().isAuthenticated) {
+      return { error: 'A sessão de cadastro do autenticador não está mais ativa. Entre novamente.' }
+    }
+
+    const attempt = (async (): Promise<{ error: string | null }> => {
+      const isCurrent = () => (
+        generation === authEvaluationGeneration &&
+        get().user?.id === userId &&
+        get().mfaSetupRequired &&
+        !get().isAuthenticated
+      )
+
+      try {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+        const session = sessionData.session
+        if (sessionError || !session || session.user.id !== userId || !isInternalPrincipal(session)) {
+          return { error: 'A sessão mudou durante o cadastro. Entre novamente.' }
+        }
+        if (!isCurrent()) return { error: 'A sessão mudou durante o cadastro. Tente novamente.' }
+
+        const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors()
+        if (!isCurrent()) return { error: 'A sessão mudou durante o cadastro. Tente novamente.' }
+        if (factorsError || !factors) {
+          return { error: 'Não foi possível consultar o autenticador. Tente novamente.' }
+        }
+
+        // Outro cliente pode ter concluído o cadastro enquanto esta tela estava
+        // aberta. Nesse caso muda para desafio sem criar um fator duplicado.
+        const verified = factors.totp
+          .filter((factor) => factor.status === 'verified')
+          .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0]
+        if (verified) {
+          set({
+            mfaRequired: true,
+            mfaSetupRequired: false,
+            pendingMfaFactorId: verified.id,
+            mfaEnrollment: null,
+            authError: null,
+          })
+          return { error: null }
+        }
+
+        // Não remove fatores incompletos de outras telas/dispositivos: isso faria
+        // duas configurações simultâneas se apagarem. O nome único também permite
+        // recuperar com segurança de um cadastro abandonado cujo QR é irrecuperável.
+        const { data: enrolled, error: enrollError } = await supabase.auth.mfa.enroll({
+          factorType: 'totp',
+          friendlyName: `Mileto Notas ${window.crypto.randomUUID().slice(0, 8)}`,
+          issuer: 'Mileto Ops',
+        })
+        if (!isCurrent()) return { error: 'A sessão mudou durante o cadastro. Tente novamente.' }
+        if (enrollError || !enrolled) {
+          return { error: 'Não foi possível gerar o QR Code. Tente novamente.' }
+        }
+
+        // QR e segredo existem somente em memória durante esta etapa.
+        set({
+          pendingMfaFactorId: enrolled.id,
+          mfaEnrollment: {
+            qrCode: enrolled.totp.qr_code,
+            secret: enrolled.totp.secret,
+          },
+          authError: null,
+        })
+        return { error: null }
+      } catch {
+        return { error: 'Não foi possível iniciar o cadastro do autenticador. Tente novamente.' }
+      }
+    })()
+
+    mfaEnrollmentPromise = attempt
+    try {
+      return await attempt
+    } finally {
+      if (mfaEnrollmentPromise === attempt) mfaEnrollmentPromise = null
     }
   },
 
@@ -458,21 +646,53 @@ export const useAuthStore = create<AuthState>()((set, get) => {
     }
 
     const factorId = get().pendingMfaFactorId
+    const userId = get().user?.id
     if (!factorId) {
-      return { error: 'Nenhum autenticador TOTP verificado foi encontrado para esta conta.' }
+      return { error: 'Nenhum autenticador TOTP ativo foi encontrado para esta conta.' }
     }
+    if (!userId || get().isAuthenticated) return { error: 'A sessão de verificação expirou. Entre novamente.' }
+
+    // Separado de authEvaluationGeneration: o sucesso do próprio desafio emite
+    // MFA_CHALLENGE_VERIFIED e legitimamente inicia outra avaliação de sessão.
+    // Cancelar, sair ou trocar de conta invalida este id em cleanupSessionState.
+    const verificationId = ++mfaVerificationGeneration
+    const verificationAttempt = { id: verificationId, userId, factorId }
+    mfaVerificationAttempt = verificationAttempt
+    const isCurrentIdentity = () => (
+      verificationId === mfaVerificationGeneration && get().user?.id === userId
+    )
+    const isCurrentAttempt = () => (
+      isCurrentIdentity() &&
+      mfaVerificationAttempt === verificationAttempt &&
+      get().pendingMfaFactorId === factorId
+    )
 
     try {
       const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code })
+      if (!isCurrentAttempt()) {
+        return { error: 'A sessão mudou durante a verificação. Entre novamente.' }
+      }
       if (error) return { error: translateMfaError(error.message) }
 
+      // O fator acabou de ser verificado; o segredo não deve permanecer na UI
+      // enquanto confirmamos o JWT AAL2 retornado pelo Auth.
+      set({ mfaEnrollment: null })
+
       const { data, error: sessionError } = await supabase.auth.getSession()
-      if (sessionError || !data.session) {
+      if (
+        !isCurrentAttempt() ||
+        sessionError ||
+        !data.session ||
+        data.session.user.id !== userId
+      ) {
         return { error: 'Não foi possível confirmar a nova sessão. Entre novamente.' }
       }
 
       const gate = await evaluateSession(data.session)
-      if (!gate.authenticated) {
+      if (!isCurrentIdentity()) {
+        return { error: 'A sessão mudou durante a verificação. Entre novamente.' }
+      }
+      if (!gate.authenticated || !get().isAuthenticated || get().user?.id !== userId) {
         return {
           error: gate.error ?? 'O segundo fator foi confirmado, mas a sessão não atingiu o nível de segurança exigido.',
         }
@@ -480,6 +700,8 @@ export const useAuthStore = create<AuthState>()((set, get) => {
       return { error: null }
     } catch (error) {
       return { error: translateMfaError(error instanceof Error ? error.message : String(error)) }
+    } finally {
+      if (mfaVerificationAttempt === verificationAttempt) mfaVerificationAttempt = null
     }
   },
 
@@ -488,14 +710,31 @@ export const useAuthStore = create<AuthState>()((set, get) => {
   },
 
   signOut: async () => {
+    // Se o usuário sair no meio do cadastro, tenta remover apenas o fator ainda
+    // não verificado. Fator verificado usado no desafio nunca é removido aqui.
+    const pendingEnrollmentFactorId = get().mfaEnrollment ? get().pendingMfaFactorId : null
+    sessionCleanupInProgress = true
     ++authEvaluationGeneration
     cleanupSessionState()
     try {
+      if (pendingEnrollmentFactorId) {
+        await Promise.race([
+          supabase.auth.mfa.unenroll({ factorId: pendingEnrollmentFactorId }),
+          new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+        ])
+      }
       await supabase.auth.signOut()
     } catch {
-      // ignora erros — força logout mesmo assim
+      // Se a remoção falhar, o fator continua inofensivo e não verificado.
+      // A limpeza local e o logout continuam mesmo com erro de rede.
+      try {
+        await supabase.auth.signOut()
+      } catch {
+        // ignora erros — força logout local mesmo assim
+      }
     } finally {
       cleanupSessionState()
+      sessionCleanupInProgress = false
     }
   },
 
