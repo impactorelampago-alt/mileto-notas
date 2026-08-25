@@ -6,6 +6,10 @@ const migration = readFileSync(
   new URL('../supabase/migrations/20260825120000_notas_program_history.sql', import.meta.url),
   'utf8',
 )
+const sharedCategoryMigration = readFileSync(
+  new URL('../supabase/migrations/20260825123000_notas_shared_category_programs.sql', import.meta.url),
+  'utf8',
+)
 const tabBar = readFileSync(new URL('../src/components/layout/TabBar.tsx', import.meta.url), 'utf8')
 const subnoteTree = readFileSync(new URL('../src/components/editor/SubnoteTree.tsx', import.meta.url), 'utf8')
 const categorySelect = readFileSync(new URL('../src/components/layout/CategorySelect.tsx', import.meta.url), 'utf8')
@@ -48,6 +52,16 @@ test('categories can be classified as programs and history is loaded only throug
   assert.match(historyStore, /notas_program_history_list/)
   assert.match(historyStore, /notas_program_history_metrics/)
   assert.match(historyStore, /notas_complete_program_subnote/)
+})
+
+test('shared categories can be classified without exposing owner-only actions', () => {
+  assert.match(categorySelect, /const canConfigureThisProgram =/)
+  assert.match(categorySelect, /canConfigurePrograms && \(isOwner \|\| isSharedWithMe\)/)
+  assert.match(categorySelect, /isHovered && \(canManage \|\| canConfigureThisProgram\)/)
+  assert.match(categorySelect, /\{canManage && \(/)
+  assert.match(sharedCategoryMigration, /FROM public\.category_shares AS share/)
+  assert.match(sharedCategoryMigration, /share\.shared_with = v_uid/)
+  assert.match(sharedCategoryMigration, /public\.notas_owns_category_key\(p_category_key\)/)
 })
 
 test('completion snapshots the active editor before the subnote is archived', () => {

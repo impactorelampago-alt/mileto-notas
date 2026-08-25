@@ -681,6 +681,12 @@ export default function CategorySelect() {
               // Ações de dono só para categorias custom que SÃO minhas. No modo
               // "Todos" (visão agregada de leitura) não há gerenciamento.
               const canManage = !viewAll && isOwner && !isSystem && !isSharedWithMe
+              // Classificar como programa é uma configuração do histórico, não
+              // uma alteração da categoria. Destinatários podem fazê-la quando a
+              // categoria foi realmente compartilhada com eles; as ações de dono
+              // (renomear/compartilhar/excluir) continuam bloqueadas.
+              const canConfigureThisProgram =
+                !viewAll && !viewingAs && !isSystem && canConfigurePrograms && (isOwner || isSharedWithMe)
               const canDragForGroup = canOrganizeGroups && groups.length > 0 && s.key_suffix !== 'TODO'
               const canDragForOps = canReorderCats && !isSharedWithMe
               const belongsToGroup = !!categoryGroupByKey.get(s.key)
@@ -768,14 +774,14 @@ export default function CategorySelect() {
                   )}
 
                   {!isRenaming && (
-                    isHovered && canManage ? (
+                    isHovered && (canManage || canConfigureThisProgram) ? (
                       <div
                         className="flex items-center"
                         style={{ gap: 2, flexShrink: 0 }}
                         onMouseEnter={() => setActionsHovered(true)}
                         onMouseLeave={() => setActionsHovered(false)}
                       >
-                        {canConfigurePrograms && (
+                        {canConfigureThisProgram && (
                           <span
                             onClick={(e) => {
                               e.stopPropagation()
@@ -795,36 +801,40 @@ export default function CategorySelect() {
                             <Code2 size={13} />
                           </span>
                         )}
-                        <span
-                          onClick={(e) => { e.stopPropagation(); setIsOpen(false); setSharePickerTarget({ kind: 'category', id: s.key, label: s.label }) }}
-                          title="Compartilhar categoria"
-                          className="flex items-center justify-center rounded"
-                          style={{ width: 22, height: 22, color: isSharedByMe ? '#34d399' : '#8a8a92' }}
-                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(16,185,129,0.14)'; e.currentTarget.style.color = '#34d399' }}
-                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = isSharedByMe ? '#34d399' : '#8a8a92' }}
-                        >
-                          <Users size={14} />
-                        </span>
-                        <span
-                          onClick={(e) => { e.stopPropagation(); startRename(s.key_suffix, s.label) }}
-                          title="Renomear"
-                          className="flex items-center justify-center rounded"
-                          style={{ width: 22, height: 22, color: '#8a8a92' }}
-                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#3a3a3a'; e.currentTarget.style.color = '#e4e4e7' }}
-                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#8a8a92' }}
-                        >
-                          <Pencil size={13} />
-                        </span>
-                        <span
-                          onClick={(e) => { e.stopPropagation(); requestDelete(s.key_suffix) }}
-                          title="Excluir categoria"
-                          className="flex items-center justify-center rounded"
-                          style={{ width: 22, height: 22, color: '#8a8a92' }}
-                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.14)'; e.currentTarget.style.color = '#ef4444' }}
-                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#8a8a92' }}
-                        >
-                          <Trash2 size={13} />
-                        </span>
+                        {canManage && (
+                          <>
+                            <span
+                              onClick={(e) => { e.stopPropagation(); setIsOpen(false); setSharePickerTarget({ kind: 'category', id: s.key, label: s.label }) }}
+                              title="Compartilhar categoria"
+                              className="flex items-center justify-center rounded"
+                              style={{ width: 22, height: 22, color: isSharedByMe ? '#34d399' : '#8a8a92' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(16,185,129,0.14)'; e.currentTarget.style.color = '#34d399' }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = isSharedByMe ? '#34d399' : '#8a8a92' }}
+                            >
+                              <Users size={14} />
+                            </span>
+                            <span
+                              onClick={(e) => { e.stopPropagation(); startRename(s.key_suffix, s.label) }}
+                              title="Renomear"
+                              className="flex items-center justify-center rounded"
+                              style={{ width: 22, height: 22, color: '#8a8a92' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#3a3a3a'; e.currentTarget.style.color = '#e4e4e7' }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#8a8a92' }}
+                            >
+                              <Pencil size={13} />
+                            </span>
+                            <span
+                              onClick={(e) => { e.stopPropagation(); requestDelete(s.key_suffix) }}
+                              title="Excluir categoria"
+                              className="flex items-center justify-center rounded"
+                              style={{ width: 22, height: 22, color: '#8a8a92' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.14)'; e.currentTarget.style.color = '#ef4444' }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#8a8a92' }}
+                            >
+                              <Trash2 size={13} />
+                            </span>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
