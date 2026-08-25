@@ -24,3 +24,10 @@ test('subnote deletion keeps its destructive-action confirmation', () => {
   assert.match(subnoteTreeSource, /title: 'Excluir subnota'/)
   assert.match(subnoteTreeSource, /openConfirm\(\{/)
 })
+
+test('deleting a program task records it as completed instead of removing it', () => {
+  assert.match(subnoteTreeSource, /if \(canCompleteSubnotes\)/)
+  assert.match(subnoteTreeSource, /confirmLabel: 'Excluir e concluir'/)
+  assert.match(subnoteTreeSource, /completeSubnote\(noteId\)/)
+  assert.match(subnoteTreeSource, /onConfirm: \(\) => \{ void deleteNote\(noteId\) \}/)
+})

@@ -121,6 +121,26 @@ export default function SubnoteTree() {
     }
   }
 
+  const requestDeleteSubnote = (noteId: string) => {
+    if (canCompleteSubnotes) {
+      openConfirm({
+        title: 'Excluir tarefa do programa',
+        message: 'A tarefa será registrada como concluída no Histórico e sairá da lista de pendentes.',
+        confirmLabel: 'Excluir e concluir',
+        onConfirm: () => { void completeSubnote(noteId) },
+      })
+      return
+    }
+
+    openConfirm({
+      title: 'Excluir subnota',
+      message: 'Excluir esta subnota?\nEsta ação não pode ser desfeita.',
+      confirmLabel: 'Excluir',
+      danger: true,
+      onConfirm: () => { void deleteNote(noteId) },
+    })
+  }
+
   const rootActive = activeNote.id === rootNote.id
   const sideBorder = side === 'left'
     ? { borderRight: '1px solid #333333' }
@@ -358,15 +378,11 @@ export default function SubnoteTree() {
                     )}
                     {canEditRoot && (
                       <button
-                        onClick={() => openConfirm({
-                          title: 'Excluir subnota',
-                          message: 'Excluir esta subnota?\nEsta ação não pode ser desfeita.',
-                          confirmLabel: 'Excluir', danger: true,
-                          onConfirm: () => { void deleteNote(note.id) },
-                        })}
+                        onClick={() => requestDeleteSubnote(note.id)}
+                        disabled={canCompleteSubnotes && completingNoteIds.has(note.id)}
                         className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-zinc-800 hover:text-red-400"
                         style={{ color: '#71717a' }}
-                        title="Excluir subnota"
+                        title={canCompleteSubnotes ? 'Excluir e registrar como concluída' : 'Excluir subnota'}
                       >
                         <X size={12} />
                       </button>

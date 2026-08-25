@@ -308,6 +308,8 @@ Peça central da navegação, estilo Bloco de Notas do Windows 11. Mostra as aba
 - **Concluir:** guarda a origem (`completedOrigins[taskId] = task.status`, persiste em localStorage) e delega a `completeNote`. A nota **continua visível na categoria de origem** (não some); fica com ✓ verde e título riscado.
 - **Reabrir:** otimista (`optimisticTarget = savedOrigin ?? prefixo+'TODO'`), remove a origem, chama a RPC **`notas_reopen_task(p_task_id, p_target_status)`**; em erro, reverte tudo.
 
+**Tarefas de Programa:** as subnotas são as entregas. Para usuários com acesso ao Histórico, tanto o ✓ quanto a ação ✗ “Excluir” chamam `notas_complete_program_subnote`: a subnota é arquivada, sai da lista de pendentes e ganha snapshot no Histórico como concluída. A exclusão destrutiva permanece inalterada para subnotas fora de categorias Programa.
+
 > Histórico: o PATCH direto antigo afetava 0 linhas para o colaborador (RLS) e "mentia" sucesso — por isso reabrir virou RPC. (O JSDoc de `toggleComplete` no código ainda está desatualizado mencionando "patch direto"; o corpo usa a RPC.)
 
 ### 6.8. Compartilhamento (categorias e notas — VIEW/EDIT)
