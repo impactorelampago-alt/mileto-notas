@@ -1803,6 +1803,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
           const updated = payload.new as Note
 
           set((state) => {
+            // Concluir uma subnota de programa usa is_archived=true. Ela deixa a
+            // árvore ativa imediatamente, inclusive em outras sessões abertas.
+            if (updated.parent_note_id && updated.is_archived) {
+              return {
+                notes: state.notes.filter((note) => note.id !== updated.id),
+                openTabs: state.openTabs.filter((id) => id !== updated.id),
+                activeTabId: state.activeTabId === updated.id
+                  ? updated.parent_note_id
+                  : state.activeTabId,
+              }
+            }
+
             const localNote = state.notes.find((n) => n.id === updated.id)
             if (!localNote) return state
 
@@ -1852,6 +1864,14 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
 
           const row = payload.new as Note
           set((state) => {
+            if (row.is_archived) {
+              return {
+                notes: state.notes.filter((note) => note.id !== row.id),
+                openTabs: state.openTabs.filter((id) => id !== row.id),
+                activeTabId: state.activeTabId === row.id ? rootId : state.activeTabId,
+              }
+            }
+
             const local = state.notes.find((n) => n.id === row.id)
             if (local) {
               // UPDATE de subnota: respeita edição local pendente / mais nova.

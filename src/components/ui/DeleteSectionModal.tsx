@@ -3,6 +3,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import { useOpsStore } from '../../stores/ops-store'
 import { useNotesStore } from '../../stores/notes-store'
 import { useSharingStore } from '../../stores/sharing-store'
+import { useProgramHistoryStore } from '../../stores/program-history-store'
 
 interface DeleteSectionModalProps {
   keySuffix: string
@@ -15,6 +16,8 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
   const deleteSection = useOpsStore((s) => s.deleteSection)
   const notes = useNotesStore((s) => s.notes)
   const categoryShares = useSharingStore((s) => s.categoryShares)
+  const programs = useProgramHistoryStore((s) => s.programs)
+  const loadPrograms = useProgramHistoryStore((s) => s.loadPrograms)
   const [isDeleting, setIsDeleting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
@@ -23,6 +26,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
   const taskIdsInSection = new Set(tasksInSection.map((t) => t.id))
   const notesInSection = notes.filter((n) => n.task_id !== null && taskIdsInSection.has(n.task_id))
   const shareCount = section ? (categoryShares[section.key]?.length ?? 0) : 0
+  const isProgram = !!section && programs.some((program) => program.active && program.category_key === section.key)
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -42,6 +46,7 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
       setIsDeleting(false)
       return
     }
+    await loadPrograms()
     onClose()
   }
 
@@ -100,6 +105,11 @@ export default function DeleteSectionModal({ keySuffix, onClose }: DeleteSection
           <p style={{ fontSize: '12px', color: '#6d6d6d' }}>
             Nenhuma nota ou subnota será apagada.
           </p>
+          {isProgram && (
+            <p style={{ marginTop: '8px', fontSize: '12px', color: '#6ee7b7' }}>
+              O histórico já registrado deste programa será preservado.
+            </p>
+          )}
           {shareCount > 0 && (
             <p style={{ marginTop: '8px', fontSize: '12px', color: '#fbbf24' }}>
               O compartilhamento será encerrado para {shareCount} pessoa{shareCount === 1 ? '' : 's'}, que {shareCount === 1 ? 'poderá' : 'poderão'} perder o acesso por esta categoria.

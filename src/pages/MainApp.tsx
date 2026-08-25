@@ -19,6 +19,7 @@ import ConnectModal from '../components/ui/ConnectModal'
 import QuickSearch from '../components/ui/QuickSearch'
 import SharePickerModal from '../components/ui/SharePickerModal'
 import ConfirmModal from '../components/ui/ConfirmModal'
+import ProgramHistory from './ProgramHistory'
 import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
 import { useWorkspacePresenceStore } from '../stores/workspace-presence-store'
@@ -32,6 +33,7 @@ import {
 } from '../lib/local-drafts'
 import { DEFAULT_SECTION_SUFFIX } from '../lib/sections'
 import { getStatusBase } from '../lib/status-keys'
+import { useProgramHistoryStore } from '../stores/program-history-store'
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -82,6 +84,9 @@ export default function MainApp() {
   const { loadOpsData, subscribeToOpsChanges, unsubscribeFromOpsChanges, setupAutoReconciliation } = useOpsStore()
   const loadCategoryGroups = useCategoryGroupsStore((s) => s.loadGroups)
   const clearCategoryGroups = useCategoryGroupsStore((s) => s.clear)
+  const loadPrograms = useProgramHistoryStore((s) => s.loadPrograms)
+  const clearPrograms = useProgramHistoryStore((s) => s.clear)
+  const isProgramHistoryOpen = useProgramHistoryStore((s) => s.isHistoryOpen)
 
   const [hasInitialized, setHasInitialized] = useState(false)
 
@@ -103,6 +108,17 @@ export default function MainApp() {
     })()
 
   }, [isAuthenticated, loadNotes, loadCategories, loadNotesWithCollaborators, loadTeamProfiles, loadShares])
+
+  // Classificação de categorias como programa + nível de acesso ao histórico.
+  // A definição é carregada para todos (inclusive quem só envia demandas); as
+  // RPCs liberam a tela/indicadores apenas aos cargos autorizados.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      clearPrograms()
+      return
+    }
+    void loadPrograms()
+  }, [isAuthenticated, loadPrograms, clearPrograms])
 
   // Grupos/pastas são preferências pessoais sincronizadas por conta efetiva.
   // Na impersonação podem ser lidos, mas só a própria conta consegue alterá-los.
@@ -369,13 +385,19 @@ export default function MainApp() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <Titlebar />
-      <TabBar />
-      <SearchBar
-        visible={searchBarVisible}
-        onClose={() => setSearchBarVisible(false)}
-      />
-      <Editor />
-      <StatusBar />
+      {isProgramHistoryOpen ? (
+        <ProgramHistory />
+      ) : (
+        <>
+          <TabBar />
+          <SearchBar
+            visible={searchBarVisible}
+            onClose={() => setSearchBarVisible(false)}
+          />
+          <Editor />
+          <StatusBar />
+        </>
+      )}
 
       <CategoryModal
         visible={showCategoryModal}

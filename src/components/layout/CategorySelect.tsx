@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { Check, ChevronDown, ChevronRight, Folder, FolderPlus, Plus, Pencil, Trash2, Users, Lock, Search, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Code2, Folder, FolderPlus, Plus, Pencil, Trash2, Users, Lock, Search, X } from 'lucide-react'
 import { useOpsStore, SYSTEM_SUFFIXES, HIDDEN_LEGACY_SUFFIXES, IMMUTABLE_SUFFIXES, normalizeLabel } from '../../stores/ops-store'
 import { useNotesStore } from '../../stores/notes-store'
 import { useAuthStore } from '../../stores/auth-store'
@@ -8,6 +8,7 @@ import { useSharingStore } from '../../stores/sharing-store'
 import { useCategoryGroupsStore, type CategoryGroup } from '../../stores/category-groups-store'
 import { sectionDisplayLabel } from '../../lib/sections'
 import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
+import { useProgramHistoryStore } from '../../stores/program-history-store'
 
 const SECTION_COLORS = [
   '#3b82f6', '#10b981', '#ef4444', '#f59e0b',
@@ -55,6 +56,11 @@ export default function CategorySelect() {
   const groupSnapshotReady = !!effectiveUserId && loadedGroupUserId === effectiveUserId
   const groups = groupSnapshotReady ? storedGroups : []
   const groupItems = groupSnapshotReady ? storedGroupItems : []
+  const programs = useProgramHistoryStore((s) => s.programs)
+  const programAccess = useProgramHistoryStore((s) => s.accessLevel)
+  const setCategoryProgram = useProgramHistoryStore((s) => s.setCategoryProgram)
+  const loadPrograms = useProgramHistoryStore((s) => s.loadPrograms)
+  const canConfigurePrograms = programAccess !== 'NONE'
 
   const [isOpen, setIsOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
@@ -62,6 +68,7 @@ export default function CategorySelect() {
   const [newLabel, setNewLabel] = useState('')
   const [newColor, setNewColor] = useState(SECTION_COLORS[0])
   const [newShared, setNewShared] = useState(false)
+  const [newProgram, setNewProgram] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [hoveredSuffix, setHoveredSuffix] = useState<string | null>(null)
   const [renamingSuffix, setRenamingSuffix] = useState<string | null>(null)
@@ -170,6 +177,7 @@ export default function CategorySelect() {
   }, [sections, tasks, notes, viewAll, completedOrigins])
 
   const active = sections.find((s) => s.key_suffix === activeSectionId) ?? null
+  const activeIsProgram = !!active && programs.some((program) => program.active && program.category_key === active.key)
   const filteredSections = useMemo(() => {
     const query = normalizeSearch(search.trim())
     if (!query) return sections
@@ -319,7 +327,13 @@ export default function CategorySelect() {
     const label = renameValue.trim()
     setRenamingSuffix(null)
     const current = sections.find((s) => s.key_suffix === suffix)?.label
-    if (label && label !== current) await updateSection(suffix, { label })
+    if (label && label !== current) {
+      await updateSection(suffix, { label })
+      const section = sections.find((item) => item.key_suffix === suffix)
+      if (section && programs.some((program) => program.active && program.category_key === section.key)) {
+        await loadPrograms()
+      }
+    }
   }
 
   const requestDelete = (suffix: string) => {
@@ -331,6 +345,7 @@ export default function CategorySelect() {
     setActionError(null)
     setNewColor(SECTION_COLORS[sections.length % SECTION_COLORS.length])
     setNewShared(false)
+    setNewProgram(false)
     setNewLabel('')
     setIsCreatingGroup(false)
     setIsCreating(true)
@@ -414,11 +429,19 @@ export default function CategorySelect() {
         return
       }
       const shareAfter = newShared
+      const programAfter = newProgram
+      const created = useOpsStore.getState().sections.find((sec) => sec.key_suffix === suffix)
       setNewLabel('')
       setNewShared(false)
+      setNewProgram(false)
       setIsCreating(false)
+      if (programAfter && created) {
+        const marked = await setCategoryProgram(created.key, true)
+        if (!marked) {
+          setActionError(useProgramHistoryStore.getState().error ?? 'A categoria foi criada, mas não foi possível marcá-la como programa.')
+        }
+      }
       if (shareAfter) {
-        const created = useOpsStore.getState().sections.find((sec) => sec.key_suffix === suffix)
         if (created) {
           setIsOpen(false)
           setSharePickerTarget({ kind: 'category', id: created.key, label })
@@ -442,6 +465,7 @@ export default function CategorySelect() {
         onMouseLeave={(e) => { if (!isOpen) e.currentTarget.style.backgroundColor = 'transparent' }}
       >
         <span style={{ width: 8, height: 8, borderRadius: 999, backgroundColor: active?.color ?? '#52525b', flexShrink: 0 }} />
+        {activeIsProgram && <Code2 size={12} style={{ color: '#34d399', flexShrink: 0 }} />}
         <span className="truncate" style={{ color: '#e4e4e7', fontSize: '12.5px', fontWeight: 600, maxWidth: 170 }}>
           {active ? sectionDisplayLabel(active.key_suffix, active.label) : 'Escolher categoria'}
         </span>
@@ -653,6 +677,7 @@ export default function CategorySelect() {
               // Categoria compartilhada COMIGO (de outro dono — subordinada).
               const isSharedWithMe = s.shared === true
               const isOwner = isCategoryOwner(s.key)
+              const isProgram = programs.some((program) => program.active && program.category_key === s.key)
               // Ações de dono só para categorias custom que SÃO minhas. No modo
               // "Todos" (visão agregada de leitura) não há gerenciamento.
               const canManage = !viewAll && isOwner && !isSystem && !isSharedWithMe
@@ -750,6 +775,26 @@ export default function CategorySelect() {
                         onMouseEnter={() => setActionsHovered(true)}
                         onMouseLeave={() => setActionsHovered(false)}
                       >
+                        {canConfigurePrograms && (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void (async () => {
+                                const changed = await setCategoryProgram(s.key, !isProgram)
+                                if (!changed) {
+                                  setActionError(useProgramHistoryStore.getState().error ?? 'Não foi possível alterar o tipo da categoria.')
+                                }
+                              })()
+                            }}
+                            title={isProgram ? 'Remover tipo programa' : 'Marcar como programa'}
+                            className="flex items-center justify-center rounded"
+                            style={{ width: 22, height: 22, color: isProgram ? '#34d399' : '#8a8a92' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(16,185,129,0.14)'; e.currentTarget.style.color = '#34d399' }}
+                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = isProgram ? '#34d399' : '#8a8a92' }}
+                          >
+                            <Code2 size={13} />
+                          </span>
+                        )}
                         <span
                           onClick={(e) => { e.stopPropagation(); setIsOpen(false); setSharePickerTarget({ kind: 'category', id: s.key, label: s.label }) }}
                           title="Compartilhar categoria"
@@ -783,6 +828,7 @@ export default function CategorySelect() {
                       </div>
                     ) : (
                       <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+                        {isProgram && <Code2 size={12} style={{ color: '#34d399' }} aria-label="Programa" />}
                         {isSharedByMe && !isSharedWithMe && <Users size={12} style={{ color: '#34d399' }} aria-label="Compartilhada por você" />}
                         <span
                           style={{
@@ -834,7 +880,7 @@ export default function CategorySelect() {
                   style={{ border: '1px solid #3f3f46', borderRadius: 6, padding: '7px 10px', color: '#e4e4e7' }}
                 />
 
-                {/* Cor + compartilhar */}
+                {/* Cor + tipo programa + compartilhar */}
                 <div className="flex items-center" style={{ gap: 6 }}>
                   {SECTION_COLORS.map((c) => {
                     const selected = newColor === c
@@ -851,12 +897,28 @@ export default function CategorySelect() {
                       />
                     )
                   })}
+                  {canConfigurePrograms && (
+                    <button
+                      onClick={() => setNewProgram((value) => !value)}
+                      title={newProgram ? 'Categoria do tipo programa' : 'Marcar como programa'}
+                      className="flex h-[30px] items-center gap-1.5 rounded-md"
+                      style={{
+                        marginLeft: 'auto', padding: '0 8px',
+                        backgroundColor: newProgram ? 'rgba(16,185,129,0.14)' : 'transparent',
+                        border: `1px solid ${newProgram ? 'rgba(16,185,129,0.35)' : '#3f3f46'}`,
+                        color: newProgram ? '#34d399' : '#8a8a92',
+                        fontSize: 10.5,
+                      }}
+                    >
+                      <Code2 size={13} /> Programa
+                    </button>
+                  )}
                   <button
                     onClick={() => setNewShared((v) => !v)}
                     title={newShared ? 'Compartilhada com a equipe' : 'Privada (só você)'}
                     className="flex items-center justify-center rounded-md"
                     style={{
-                      marginLeft: 'auto', width: 30, height: 30,
+                      marginLeft: canConfigurePrograms ? 0 : 'auto', width: 30, height: 30,
                       backgroundColor: newShared ? 'rgba(16,185,129,0.14)' : 'transparent',
                       border: `1px solid ${newShared ? 'rgba(16,185,129,0.35)' : '#3f3f46'}`,
                       color: newShared ? '#34d399' : '#8a8a92',

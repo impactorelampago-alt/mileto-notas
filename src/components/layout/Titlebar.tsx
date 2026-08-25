@@ -1,15 +1,20 @@
 import { useState, useEffect } from 'react'
-import { Minus, Maximize2, Minimize2, X, Search } from 'lucide-react'
+import { Minus, Maximize2, Minimize2, X, Search, History } from 'lucide-react'
 import CategorySelect from './CategorySelect'
 import AccountSwitcher from './AccountSwitcher'
 import NotificationBell from './NotificationBell'
 import UpdateButton from './UpdateButton'
 import SyncStatus from './SyncStatus'
 import { useUIStore } from '../../stores/ui-store'
+import { useProgramHistoryStore } from '../../stores/program-history-store'
 
 export default function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const setShowQuickSearch = useUIStore((s) => s.setShowQuickSearch)
+  const programAccess = useProgramHistoryStore((s) => s.accessLevel)
+  const isHistoryOpen = useProgramHistoryStore((s) => s.isHistoryOpen)
+  const openHistory = useProgramHistoryStore((s) => s.openHistory)
+  const closeHistory = useProgramHistoryStore((s) => s.closeHistory)
 
   useEffect(() => {
     const syncMaximized = async () => {
@@ -59,6 +64,22 @@ export default function Titlebar() {
         <div style={{ width: 1, height: 16, backgroundColor: '#2a2a2a', margin: '0 8px' }} />
         <AccountSwitcher />
         <div style={{ width: 1, height: 16, backgroundColor: '#2a2a2a', margin: '0 8px' }} />
+        {programAccess !== 'NONE' && (
+          <button
+            onClick={() => { if (isHistoryOpen) closeHistory(); else void openHistory() }}
+            className="flex h-7 w-9 items-center justify-center rounded-md"
+            style={{
+              color: isHistoryOpen ? '#34d399' : '#969696',
+              backgroundColor: isHistoryOpen ? 'rgba(16,185,129,0.12)' : 'transparent',
+              transition: 'background-color 140ms, color 140ms',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = isHistoryOpen ? 'rgba(16,185,129,0.18)' : '#232323'; e.currentTarget.style.color = isHistoryOpen ? '#6ee7b7' : '#e4e4e4' }}
+            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = isHistoryOpen ? 'rgba(16,185,129,0.12)' : 'transparent'; e.currentTarget.style.color = isHistoryOpen ? '#34d399' : '#969696' }}
+            title={isHistoryOpen ? 'Voltar para as notas' : 'Histórico de programas'}
+          >
+            <History size={15} />
+          </button>
+        )}
         <button
           onClick={() => setShowQuickSearch(true)}
           className="flex h-7 w-9 items-center justify-center rounded-md"

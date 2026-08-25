@@ -10,6 +10,7 @@ import { useWorkspacePresenceStore } from '../../stores/workspace-presence-store
 import { NOTE_PRIORITY_COLORS, NOTE_PRIORITY_LABELS, normalizePriority } from '../../lib/note-priority'
 import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
 import type { NotePriority } from '../../lib/types'
+import { useProgramHistoryStore } from '../../stores/program-history-store'
 
 type SectionGroup = {
   key: string
@@ -53,6 +54,7 @@ export default function TabBar() {
   const wsPeers = useWorkspacePresenceStore((s) => s.byRoot)
   const setSharePickerTarget = useUIStore((s) => s.setSharePickerTarget)
   const openConfirm = useUIStore((s) => s.openConfirm)
+  const programs = useProgramHistoryStore((s) => s.programs)
 
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -63,6 +65,7 @@ export default function TabBar() {
   const [priorityMenu, setPriorityMenu] = useState<{ noteId: string; x: number; y: number } | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
+  const deletingNoteIdsRef = useRef(new Set<string>())
   const tabsRef = useRef<HTMLDivElement>(null)
   const [tabScroll, setTabScroll] = useState({ left: false, right: false })
   const prevSectionRef = useRef<string | null>(activeSectionId)
@@ -296,7 +299,7 @@ export default function TabBar() {
     void toggleComplete(noteId)
   }
 
-  // Confirmações (excluir / concluir-reabrir) — via ConfirmModal genérico.
+  // Concluir/reabrir continua exigindo confirmação.
   const askConclude = (noteId: string, done: boolean) => {
     openConfirm({
       title: done ? 'Reabrir nota' : 'Concluir nota',
@@ -305,14 +308,15 @@ export default function TabBar() {
       onConfirm: () => concludeNote(noteId),
     })
   }
-  const askDelete = (noteId: string) => {
-    openConfirm({
-      title: 'Excluir nota',
-      message: 'Tem certeza que deseja excluir esta nota?\nEsta ação não pode ser desfeita.',
-      confirmLabel: 'Excluir',
-      danger: true,
-      onConfirm: () => { void deleteNote(noteId) },
-    })
+
+  // Exclusão direta: o clique no X/menu já expressa a intenção. Mantém um lock
+  // por nota enquanto o banco processa para evitar duas requisições simultâneas.
+  const deleteImmediately = (noteId: string) => {
+    if (deletingNoteIdsRef.current.has(noteId)) return
+    deletingNoteIdsRef.current.add(noteId)
+    void deleteNote(noteId)
+      .catch((error) => console.error('[TabBar] deleteNote failed:', error))
+      .finally(() => deletingNoteIdsRef.current.delete(noteId))
   }
 
   const handleCreateNote = async () => {
@@ -386,7 +390,12 @@ export default function TabBar() {
               const priorityColors = NOTE_PRIORITY_COLORS[priority]
               const noteTask = tasks.find((t) => t.id === note.task_id)
               const isDone = noteTask ? isDoneStatus(noteTask.status) : false
-              const canComplete = !viewAll && !!note.task_id && !(note.is_shared_with_me && note.shared_permission !== 'EDIT')
+              const isProgramRoot = !!noteTask && programs.some(
+                (program) => program.active && program.category_key === noteTask.status,
+              )
+              // Em programa, a raiz representa a pessoa responsável. As entregas
+              // concluíveis são as subnotas, então a raiz nunca vai para DONE.
+              const canComplete = !isProgramRoot && !viewAll && !!note.task_id && !(note.is_shared_with_me && note.shared_permission !== 'EDIT')
               // Posso editar esta nota? (mesma regra do Editor) — gateia o dot de
               // prioridade e o renomear, que escrevem na task/nota de terceiros.
               // DONO tem controle total (edita em qualquer modo, inclusive "Todos").
@@ -549,7 +558,7 @@ export default function TabBar() {
 
                   {!viewAll && canDeleteNote(note) && (
                     <span
-                      onClick={(e) => { e.stopPropagation(); askDelete(noteId) }}
+                      onClick={(e) => { e.stopPropagation(); deleteImmediately(noteId) }}
                       title="Excluir nota"
                       className="flex shrink-0 items-center justify-center"
                       style={{ width: 18, height: 18, borderRadius: 4, color: '#71717a', transition: 'background-color 140ms, color 140ms' }}
@@ -673,8 +682,11 @@ export default function TabBar() {
         const ownsNote = canDeleteNote(ctxNote)
         const canRename = canEditNote(ctxNote)
         const canShare = ownsNote
-        const canComplete = !!ctxNote.task_id && !(ctxNote.is_shared_with_me && ctxNote.shared_permission !== 'EDIT')
         const ctxTask = tasks.find((t) => t.id === ctxNote.task_id)
+        const isProgramRoot = !!ctxTask && programs.some(
+          (program) => program.active && program.category_key === ctxTask.status,
+        )
+        const canComplete = !isProgramRoot && !!ctxNote.task_id && !(ctxNote.is_shared_with_me && ctxNote.shared_permission !== 'EDIT')
         const ctxDone = ctxTask ? isDoneStatus(ctxTask.status) : false
         return (
           <div
@@ -726,7 +738,7 @@ export default function TabBar() {
                 onClick={() => {
                   const id = contextMenuNoteId
                   setContextMenuNoteId(null)
-                  if (id) askDelete(id)
+                  if (id) deleteImmediately(id)
                 }}
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12.5px] text-red-400 transition-colors hover:bg-zinc-800"
               >

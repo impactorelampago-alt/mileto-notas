@@ -18,6 +18,7 @@ import MarkdownEditor, { type MarkdownEditorHandle } from './MarkdownEditor'
 import type { FormatKind } from './markdown-cm'
 import { usePresenceStore } from '../../stores/presence-store'
 import { useCollabStore } from '../../stores/collab-store'
+import type { ActiveNoteSnapshotRequest } from '../../stores/program-history-store'
 import { saveDraft } from '../../lib/local-drafts'
 
 // Título = 1ª linha não-vazia, limpa dos marcadores markdown (fica bonito na aba e
@@ -159,11 +160,40 @@ export default function Editor() {
       if (title !== '') patch.title = title
       void updateNote(id, patch)
     }
+    const handleCaptureSnapshot = (event: Event) => {
+      const request = (event as CustomEvent<ActiveNoteSnapshotRequest>).detail
+      const id = activeNoteIdRef.current
+      if (!request || !id || request.noteId !== id) return
+
+      if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
+      const collabSession = useCollabStore.getState().session
+      const content = collabSession?.noteId === id
+        ? collabSession.ytext.toString()
+        : localContentRef.current
+      const current = useNotesStore.getState().notes.find((note) => note.id === id)
+      const derivedTitle = deriveTitle(content)
+      const title = derivedTitle || current?.title || 'Sem título'
+
+      // A resposta é síncrona: a RPC de conclusão recebe exatamente o texto que
+      // está no editor, mesmo se o save REST/CRDT ainda estiver em andamento.
+      request.snapshot = { title, content }
+
+      if (
+        !isReadOnlyRef.current
+        && current
+        && (current.content !== content || current.title !== title)
+      ) {
+        syncedContentRef.current = content
+        void updateNote(id, { title, content })
+      }
+    }
     const handleSelectAll = () => editorRef.current?.selectAll()
     window.addEventListener('force-save', handleForceSave)
+    window.addEventListener('capture-active-note-snapshot', handleCaptureSnapshot)
     window.addEventListener('select-all', handleSelectAll)
     return () => {
       window.removeEventListener('force-save', handleForceSave)
+      window.removeEventListener('capture-active-note-snapshot', handleCaptureSnapshot)
       window.removeEventListener('select-all', handleSelectAll)
     }
   }, [updateNote])

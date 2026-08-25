@@ -1,7 +1,9 @@
 import { useMemo, useRef, useState } from 'react'
 import {
   ArrowLeftRight,
+  Check,
   FileText,
+  LoaderCircle,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -13,6 +15,8 @@ import { useNotesStore } from '../../stores/notes-store'
 import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore, SUBNOTE_MIN_WIDTH, SUBNOTE_MAX_WIDTH } from '../../stores/ui-store'
 import { NOTE_PRIORITY_COLORS, normalizePriority } from '../../lib/note-priority'
+import { useOpsStore } from '../../stores/ops-store'
+import { useProgramHistoryStore } from '../../stores/program-history-store'
 
 export default function SubnoteTree() {
   const notes = useNotesStore((s) => s.notes)
@@ -31,6 +35,12 @@ export default function SubnoteTree() {
   useAuthStore((s) => s.editableIds) // re-render quando os conjuntos de permissão chegam
   const canEditNote = useAuthStore((s) => s.canEditNote)
   const isDono = useAuthStore((s) => s.isDono())
+  const tasks = useOpsStore((s) => s.tasks)
+  const programs = useProgramHistoryStore((s) => s.programs)
+  const programAccess = useProgramHistoryStore((s) => s.accessLevel)
+  const completeSubnote = useProgramHistoryStore((s) => s.completeSubnote)
+  const completingNoteIds = useProgramHistoryStore((s) => s.completingNoteIds)
+  const programError = useProgramHistoryStore((s) => s.error)
 
   // Preferências do painel (lado / colapsado / largura), persistidas no ui-store.
   const side = useUIStore((s) => s.subnoteSide)
@@ -68,6 +78,11 @@ export default function SubnoteTree() {
   }, [notes, rootNote])
 
   const canEditRoot = rootNote ? !viewingAs && (isDono || (!viewAll && canEditNote(rootNote))) : false
+  const rootTask = rootNote?.task_id ? tasks.find((task) => task.id === rootNote.task_id) : null
+  const isProgramRoot = !!rootTask && programs.some(
+    (program) => program.active && program.category_key === rootTask.status,
+  )
+  const canCompleteSubnotes = isProgramRoot && programAccess !== 'NONE' && canEditRoot
 
   if (!activeNote || !rootNote) return null
   // Só-leitura sem nenhuma subnota: painel vazio não agrega — esconde. Quando há
@@ -326,25 +341,47 @@ export default function SubnoteTree() {
                   </span>
                 </button>
 
-                {canEditRoot && (isActive || isHovered) && (
-                  <button
-                    onClick={() => openConfirm({
-                      title: 'Excluir subnota',
-                      message: 'Excluir esta subnota?\nEsta ação não pode ser desfeita.',
-                      confirmLabel: 'Excluir', danger: true,
-                      onConfirm: () => { void deleteNote(note.id) },
-                    })}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-zinc-800 hover:text-red-400"
-                    style={{ color: '#71717a' }}
-                    title="Excluir subnota"
-                  >
-                    <X size={12} />
-                  </button>
+                {(isActive || isHovered) && (
+                  <div className="flex shrink-0 items-center">
+                    {canCompleteSubnotes && (
+                      <button
+                        onClick={() => { void completeSubnote(note.id) }}
+                        disabled={completingNoteIds.has(note.id)}
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-emerald-950 disabled:opacity-50"
+                        style={{ color: '#34d399' }}
+                        title="Concluir e enviar ao histórico"
+                      >
+                        {completingNoteIds.has(note.id)
+                          ? <LoaderCircle size={12} className="animate-spin" />
+                          : <Check size={13} strokeWidth={2.5} />}
+                      </button>
+                    )}
+                    {canEditRoot && (
+                      <button
+                        onClick={() => openConfirm({
+                          title: 'Excluir subnota',
+                          message: 'Excluir esta subnota?\nEsta ação não pode ser desfeita.',
+                          confirmLabel: 'Excluir', danger: true,
+                          onConfirm: () => { void deleteNote(note.id) },
+                        })}
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-zinc-800 hover:text-red-400"
+                        style={{ color: '#71717a' }}
+                        title="Excluir subnota"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             )
           })}
         </div>
+        {isProgramRoot && programError && (
+          <div role="alert" style={{ marginTop: 8, padding: '6px 8px', borderRadius: 6, color: '#fca5a5', backgroundColor: 'rgba(127,29,29,0.2)', fontSize: 10.5 }}>
+            {programError}
+          </div>
+        )}
       </div>
 
       {/* Alça de redimensionamento na borda interna (entre o painel e o editor). */}
