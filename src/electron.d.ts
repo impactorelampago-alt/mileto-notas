@@ -19,6 +19,7 @@ declare global {
       closeApp: () => void
       app: {
         getVersion: () => Promise<string>
+        rendererReady: () => void
       }
       power: {
         onResume: (callback: () => void) => void

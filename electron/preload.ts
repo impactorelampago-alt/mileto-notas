@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeApp: () => ipcRenderer.send('app:close-ready'),
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    rendererReady: () => ipcRenderer.send('app:renderer-ready'),
   },
   power: {
     // Dispara quando o SO acorda do sleep / a tela é destravada → o renderer

@@ -14,6 +14,13 @@ export default function App() {
   const initialize = useAuthStore((state) => state.initialize)
 
   useEffect(() => {
+    // Confirma ao processo principal que React e suas dependências carregaram.
+    // Se um erro de bootstrap impedir este ponto, o main oferece a atualização
+    // nativa de recuperação, que não depende desta interface nem do Supabase.
+    window.electronAPI.app.rendererReady()
+  }, [])
+
+  useEffect(() => {
     initialize()
   }, [initialize])
 

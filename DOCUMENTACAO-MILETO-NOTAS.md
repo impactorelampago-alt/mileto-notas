@@ -474,6 +474,8 @@ Camada local invisível (estilo Bloco de Notas do Windows 11):
 
 **Sequência feliz:** abre → 3s → `checkForUpdates` → versão nova → banner "available" → clique → `update:install` → `downloadUpdate` → progresso → `update-downloaded` → salva via `app:before-close` → `doInstall` → `quitAndInstall` → instala e reabre.
 
+**Recuperação nativa (v1.4.59+):** o renderer confirma `app:renderer-ready` depois que React e suas dependências carregam. Se essa confirmação não chegar em 10s, o carregamento falhar, o processo do renderer encerrar ou a janela ficar sem resposta, o processo principal marca a interface como indisponível. Quando houver uma versão nova, ele abre um diálogo nativo com **“Atualizar agora”**, baixa pelo próprio `electron-updater`, mostra o progresso na barra de tarefas e instala/reabre sem depender de React, login ou Supabase. O fluxo saudável continua não-intrusivo e manual pelo botão da interface.
+
 ---
 
 ## 10. Banco de dados — objetos do Notas
