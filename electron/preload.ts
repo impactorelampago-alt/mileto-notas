@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     set: (key: string, value: string) => ipcRenderer.invoke('session:set', key, value),
     remove: (key: string) => ipcRenderer.invoke('session:remove', key),
   },
+  files: {
+    saveText: (input: { title: string; content: string }) =>
+      ipcRenderer.invoke('note:export-txt', input),
+  },
   onBeforeClose: (callback: () => void) => {
     // Garante listener único — evita acúmulo em hot-reload / re-registro
     ipcRenderer.removeAllListeners('app:before-close')

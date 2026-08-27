@@ -3,8 +3,12 @@ import { supabase } from '../lib/supabase'
 import { useNotesStore } from './notes-store'
 import { useAuthStore } from './auth-store'
 
-export type ProgramAccessLevel = 'NONE' | 'SELF' | 'TEAM'
+export type ProgramAccessLevel = 'NONE' | 'REPORTER' | 'SELF' | 'TEAM'
 export type ProgramHistoryPeriod = '30d' | '90d' | 'all'
+
+export function canManageProgramWorkflow(accessLevel: ProgramAccessLevel): boolean {
+  return accessLevel === 'TEAM' || accessLevel === 'SELF'
+}
 
 export interface NotasProgram {
   id: string
@@ -145,7 +149,7 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
 
     const access = accessResult.data
     const accessLevel: ProgramAccessLevel =
-      access === 'TEAM' || access === 'SELF' ? access : 'NONE'
+      access === 'TEAM' || access === 'SELF' || access === 'REPORTER' ? access : 'NONE'
     const programs = (programsResult.data ?? []) as NotasProgram[]
     const selectedStillExists = programs.some((program) => program.id === get().selectedProgramId)
     const selectedProgramId = selectedStillExists
@@ -177,6 +181,10 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
   }),
 
   setCategoryProgram: async (categoryKey, isProgram) => {
+    if (!canManageProgramWorkflow(get().accessLevel)) {
+      set({ error: 'Seu acesso ao Histórico é somente para acompanhar suas solicitações.' })
+      return false
+    }
     set({ error: null })
     const { error } = await supabase.rpc('notas_set_category_program', {
       p_category_key: categoryKey,
@@ -261,7 +269,9 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
   },
 
   completeSubnote: async (noteId) => {
-    if (get().accessLevel === 'NONE' || get().completingNoteIds.has(noteId)) return false
+    if (!canManageProgramWorkflow(get().accessLevel) || get().completingNoteIds.has(noteId)) {
+      return false
+    }
 
     const note = useNotesStore.getState().notes.find((item) => item.id === noteId)
     if (!note?.parent_note_id) return false
@@ -286,17 +296,25 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
         p_content: snapshot.content,
       })
       if (error) {
+        // Outra sessão/versão pode já ter arquivado ou excluído a subnota. Se a
+        // raiz continua visível e a filha deixou de ser pendência no servidor,
+        // limpa o fantasma local e trata a intenção do usuário como satisfeita.
+        const removed = await useNotesStore.getState().removeIfInactiveOnServer(
+          noteId,
+          note.parent_note_id,
+        )
+        if (removed) {
+          set({ error: null })
+          if (get().isHistoryOpen && get().selectedProgramId) await get().loadHistory()
+          return true
+        }
         const message = errorMessage(error, 'Não foi possível concluir a subnota.')
         console.error('[program-history] completeSubnote:', message)
         set({ error: message })
         return false
       }
 
-      useNotesStore.setState((state) => ({
-        notes: state.notes.filter((item) => item.id !== noteId),
-        openTabs: state.openTabs.filter((id) => id !== noteId),
-        activeTabId: state.activeTabId === noteId ? note.parent_note_id : state.activeTabId,
-      }))
+      useNotesStore.getState().removeInactiveNoteLocally(noteId, note.parent_note_id)
 
       if (get().isHistoryOpen && get().selectedProgramId) {
         await get().loadHistory()
@@ -310,6 +328,10 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
   },
 
   reopenItem: async (historyId) => {
+    if (!canManageProgramWorkflow(get().accessLevel)) {
+      set({ error: 'Seu acesso ao Histórico é somente para acompanhar suas solicitações.' })
+      return false
+    }
     set({ error: null })
     const { error } = await supabase.rpc('notas_reopen_program_subnote', {
       p_history_id: historyId,

@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { Calendar, Building2, Repeat, Check, X, Search, History } from 'lucide-react'
+import { Calendar, Building2, Repeat, Check, X, Search, History, FileDown, Loader2, AlertCircle } from 'lucide-react'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
@@ -41,7 +41,13 @@ function firstName(name: string): string {
 /** Barra de detalhe da nota (espelha o detalhe da tarefa do Ops): Categoria ·
  * Prioridade · Prazo · Empresa · Recorrência. Fica entre as abas e o editor.
  * Tudo grava na TASK (fonte de verdade do Ops) via updateTaskFields / updateNote. */
-export default function NoteDetailBar({ livePeers = [] }: { livePeers?: { key: string; name: string; color: string }[] }) {
+export default function NoteDetailBar({
+  livePeers = [],
+  onDownloadTxt,
+}: {
+  livePeers?: { key: string; name: string; color: string }[]
+  onDownloadTxt: () => Promise<boolean>
+}) {
   const activeNote = useNotesStore((s) => s.notes.find((n) => n.id === s.activeTabId) ?? null)
   const updateNote = useNotesStore((s) => s.updateNote)
   const sections = useOpsStore((s) => s.sections)
@@ -57,7 +63,13 @@ export default function NoteDetailBar({ livePeers = [] }: { livePeers?: { key: s
 
   const [pop, setPop] = useState<Pop>(null)
   const [clientSearch, setClientSearch] = useState('')
+  const [downloadState, setDownloadState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const ref = useRef<HTMLDivElement>(null)
+  const downloadResetRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (downloadResetRef.current) clearTimeout(downloadResetRef.current)
+  }, [])
 
   useEffect(() => {
     if (!pop) return
@@ -70,8 +82,34 @@ export default function NoteDetailBar({ livePeers = [] }: { livePeers?: { key: s
 
   const activeNoteId = activeNote?.id
   useEffect(() => {
+    setDownloadState('idle')
+    if (downloadResetRef.current) {
+      clearTimeout(downloadResetRef.current)
+      downloadResetRef.current = null
+    }
     if (activeNoteId) void loadNoteEdits(activeNoteId)
   }, [activeNoteId, loadNoteEdits])
+
+  const downloadTxt = async () => {
+    if (downloadState === 'saving') return
+    if (downloadResetRef.current) {
+      clearTimeout(downloadResetRef.current)
+      downloadResetRef.current = null
+    }
+    setDownloadState('saving')
+    try {
+      const saved = await onDownloadTxt()
+      if (!saved) {
+        setDownloadState('idle')
+        return
+      }
+      setDownloadState('saved')
+    } catch (error) {
+      console.error('[note-export] Falha ao salvar TXT:', error)
+      setDownloadState('error')
+    }
+    downloadResetRef.current = setTimeout(() => setDownloadState('idle'), 2200)
+  }
 
   const task = useMemo(
     () => (activeNote?.task_id ? tasks.find((t) => t.id === activeNote.task_id) ?? null : null),
@@ -381,6 +419,31 @@ export default function NoteDetailBar({ livePeers = [] }: { livePeers?: { key: s
         {done && (
           <span style={{ fontSize: 11, color: '#34d399', fontWeight: 600 }}>✓ Concluída</span>
         )}
+        <button
+          onClick={() => { void downloadTxt() }}
+          disabled={downloadState === 'saving'}
+          className="flex items-center rounded-md"
+          title={downloadState === 'error' ? 'Não foi possível baixar a nota' : 'Baixar nota em arquivo .txt'}
+          style={{
+            gap: 6, height: 26, padding: '0 9px', flexShrink: 0,
+            fontSize: 12, fontWeight: 500,
+            color: downloadState === 'error' ? '#f87171' : downloadState === 'saved' ? '#a7f3d0' : '#9a9aa3',
+            backgroundColor: downloadState === 'saved' ? 'rgba(16,185,129,0.10)' : 'transparent',
+            border: `1px solid ${downloadState === 'error' ? 'rgba(248,113,113,0.4)' : downloadState === 'saved' ? 'rgba(16,185,129,0.30)' : '#333'}`,
+            cursor: downloadState === 'saving' ? 'wait' : 'pointer',
+          }}
+          onMouseEnter={(e) => { if (downloadState === 'idle') e.currentTarget.style.backgroundColor = '#2a2a2a' }}
+          onMouseLeave={(e) => { if (downloadState === 'idle') e.currentTarget.style.backgroundColor = 'transparent' }}
+        >
+          {downloadState === 'saving'
+            ? <Loader2 size={13} className="animate-spin" />
+            : downloadState === 'saved'
+              ? <Check size={13} />
+              : downloadState === 'error'
+                ? <AlertCircle size={13} />
+                : <FileDown size={13} />}
+          <span>{downloadState === 'saving' ? 'Salvando…' : downloadState === 'saved' ? 'Baixada' : downloadState === 'error' ? 'Falhou' : 'Baixar .txt'}</span>
+        </button>
         {/* ATIVIDADE — quem está editando AGORA (avatares + pulse) ou, se ninguém, a última
             edição. Clique abre o popover: presença ao vivo + histórico. (Antes a presença
             flutuava sobre os botões das Subnotas.) */}

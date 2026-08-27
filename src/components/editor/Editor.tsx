@@ -271,11 +271,14 @@ export default function Editor() {
     const seed = activeNote?.content ?? ''
     void store.open(id, seed, { id: meId, name: myName }, async (noteId, markdown, persisted) => {
       const title = deriveTitle(markdown)
+      const current = useNotesStore.getState().notes.find((note) => note.id === noteId)
+      // A tarefa pode ter sido concluída por outra sessão durante um flush CRDT.
+      // Se já saiu do estado ativo, não recria draft nem grava snapshot tardio.
+      if (!current) return
       if (!persisted) {
-        const current = useNotesStore.getState().notes.find((note) => note.id === noteId)
         await saveDraft(noteId, {
           content: markdown,
-          title: title || current?.title || '',
+          title: title || current.title || '',
           savedAt: new Date().toISOString(),
         })
         return
@@ -300,6 +303,21 @@ export default function Editor() {
     },
     [isReadOnly],
   )
+
+  const downloadAsTxt = useCallback(async (): Promise<boolean> => {
+    const id = activeNoteIdRef.current
+    if (!id) return false
+
+    const current = useNotesStore.getState().notes.find((note) => note.id === id)
+    if (!current) return false
+    const liveSession = useCollabStore.getState().session
+    const content = liveSession?.noteId === id
+      ? liveSession.ytext.toString()
+      : localContentRef.current
+    const title = deriveTitle(content) || current.title || 'Sem título'
+    const result = await window.electronAPI.files.saveText({ title, content })
+    return result.saved
+  }, [])
 
   const applyFormat = useCallback((kind: FormatKind) => {
     editorRef.current?.applyFormat(kind)
@@ -365,7 +383,7 @@ export default function Editor() {
     <div className="editor-content flex flex-1 flex-col overflow-hidden" style={{ boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.25)' }}>
       {/* Presença ao vivo agora vive na NoteDetailBar (unificada com "última edição") —
           antes era um overlay flutuante que caía sobre os botões das Subnotas. */}
-      <NoteDetailBar livePeers={barPeers} />
+      <NoteDetailBar livePeers={barPeers} onDownloadTxt={downloadAsTxt} />
 
       <div className="relative flex flex-1 overflow-hidden">
         {subnoteSide === 'left' && <SubnoteTree />}

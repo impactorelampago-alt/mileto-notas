@@ -15,6 +15,12 @@ declare global {
         set: (key: string, value: string) => Promise<void>
         remove: (key: string) => Promise<void>
       }
+      files: {
+        saveText: (input: { title: string; content: string }) => Promise<{
+          saved: boolean
+          cancelled: boolean
+        }>
+      }
       onBeforeClose: (callback: () => void) => void
       closeApp: () => void
       app: {

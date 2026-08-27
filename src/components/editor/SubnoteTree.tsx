@@ -16,7 +16,10 @@ import { useAuthStore } from '../../stores/auth-store'
 import { useUIStore, SUBNOTE_MIN_WIDTH, SUBNOTE_MAX_WIDTH } from '../../stores/ui-store'
 import { NOTE_PRIORITY_COLORS, normalizePriority } from '../../lib/note-priority'
 import { useOpsStore } from '../../stores/ops-store'
-import { useProgramHistoryStore } from '../../stores/program-history-store'
+import {
+  canManageProgramWorkflow,
+  useProgramHistoryStore,
+} from '../../stores/program-history-store'
 
 export default function SubnoteTree() {
   const notes = useNotesStore((s) => s.notes)
@@ -82,7 +85,9 @@ export default function SubnoteTree() {
   const isProgramRoot = !!rootTask && programs.some(
     (program) => program.active && program.category_key === rootTask.status,
   )
-  const canCompleteSubnotes = isProgramRoot && programAccess !== 'NONE' && canEditRoot
+  const canManageProgramTasks = canManageProgramWorkflow(programAccess)
+  const canCompleteSubnotes = isProgramRoot && canManageProgramTasks && canEditRoot
+  const canDeleteSubnotes = canEditRoot && (!isProgramRoot || canManageProgramTasks)
 
   if (!activeNote || !rootNote) return null
   // Só-leitura sem nenhuma subnota: painel vazio não agrega — esconde. Quando há
@@ -376,7 +381,7 @@ export default function SubnoteTree() {
                           : <Check size={13} strokeWidth={2.5} />}
                       </button>
                     )}
-                    {canEditRoot && (
+                    {canDeleteSubnotes && (
                       <button
                         onClick={() => requestDeleteSubnote(note.id)}
                         disabled={canCompleteSubnotes && completingNoteIds.has(note.id)}

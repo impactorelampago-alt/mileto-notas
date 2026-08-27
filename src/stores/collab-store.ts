@@ -95,6 +95,8 @@ interface CollabState {
   /** Reconexão pós-sleep/rede: recria o canal de broadcast da sessão atual (mantém o
    *  Y.Doc) e re-dispara o sync-req. No-op se não houver sessão aberta. */
   resubscribe: () => void
+  /** Encerra sem flush uma nota que o servidor arquivou/excluiu e descarta buffers dela. */
+  discardNote: (noteId: string) => void
   close: () => Promise<void>
 }
 
@@ -111,6 +113,7 @@ let _pendingVersion = 0
 let _lastWriteMs = 0
 const _pendingSimpleEdits = new Map<string, PendingSimpleEdit>()
 const _flushQueues = new Map<string, Promise<void>>()
+const _discardedNoteIds = new Set<string>()
 
 function nextWriteTimestamp(): string {
   const now = Date.now()
@@ -280,6 +283,7 @@ function takePendingSimpleEdit(noteId: string, version?: number): PendingSimpleE
 }
 
 async function restorePendingSimpleEdit(noteId: string, edit: PendingSimpleEdit): Promise<boolean> {
+  if (_discardedNoteIds.has(noteId)) return false
   const current = _pendingSimpleEdits.get(noteId)
   const preserved = !current || current.version <= edit.version ? edit : current
   if (preserved === edit) _pendingSimpleEdits.set(noteId, edit)
@@ -300,6 +304,7 @@ function enqueueFlush(
   const current = previous
     .catch(() => { /* uma tentativa anterior falhou; a fila precisa continuar */ })
     .then(async () => {
+      if (_discardedNoteIds.has(noteId)) return
       // Primeiro cria a rede de segurança local. Se a rede cair durante o persist,
       // este texto sobrevive no electron-store e será restaurado no próximo boot.
       if (onSnapshot) await onSnapshot(noteId, markdownFromUpdate(mine), false)
@@ -374,6 +379,10 @@ function flushAndTeardownCurrent(): Promise<void> {
  * reaparecer antigo na próxima abertura.
  */
 async function flushPendingSimpleEdit(noteId: string, edit: PendingSimpleEdit): Promise<void> {
+  if (_discardedNoteIds.has(noteId)) {
+    _pendingSimpleEdits.delete(noteId)
+    return
+  }
   if (!takePendingSimpleEdit(noteId, edit.version)) return
   try {
     await waitForFlush(noteId)
@@ -419,9 +428,12 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
   loading: false,
 
   open: (noteId, seed, me, onSnapshot, editable) => {
+    // Reabrir pelo Histórico devolve legitimamente a nota ao fluxo ativo.
+    _discardedNoteIds.delete(noteId)
     const requestId = ++_openGeneration
 
     const run = async (): Promise<void> => {
+      if (_discardedNoteIds.has(noteId)) return
       // Uma requisição velha sem texto pendente não precisa nem tocar a rede.
       if (requestId !== _openGeneration && !_pendingSimpleEdits.has(noteId)) return
       if (get().session?.noteId === noteId && requestId === _openGeneration) return
@@ -436,6 +448,7 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
 
       // Reabrir a mesma nota imediatamente precisa esperar o save do close anterior.
       await waitForFlush(noteId)
+      if (_discardedNoteIds.has(noteId)) return
       if (requestId !== _openGeneration && !_pendingSimpleEdits.has(noteId)) return
 
       const doc = new Y.Doc()
@@ -459,6 +472,11 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
         console.warn('[collab] open/load falhou — modo simples:', error)
         undoManager.destroy(); awareness.destroy(); doc.destroy()
         if (requestId === _openGeneration) set({ session: null, collabPeers: [], loading: false })
+        return
+      }
+
+      if (_discardedNoteIds.has(noteId)) {
+        undoManager.destroy(); awareness.destroy(); doc.destroy()
         return
       }
 
@@ -634,6 +652,7 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
   },
 
   stageSimpleEdit: (noteId, base, target) => {
+    if (_discardedNoteIds.has(noteId)) return
     const live = _i.session?.noteId === noteId && _i.editable ? _i.session : null
     if (live) {
       const edit: PendingSimpleEdit = {
@@ -656,6 +675,18 @@ export const useCollabStore = create<CollabState>()((set, get) => ({
       target,
       version: ++_pendingVersion,
     })
+  },
+
+  discardNote: (noteId) => {
+    _discardedNoteIds.add(noteId)
+    _pendingSimpleEdits.delete(noteId)
+    if (_i.session?.noteId !== noteId) return
+
+    // A RPC de conclusão já recebeu o snapshot final. Não faz flush tardio da
+    // sessão encerrada, pois ele poderia recriar um draft depois do archive.
+    _openGeneration += 1
+    teardown()
+    set({ session: null, collabPeers: [], loading: false })
   },
 
   resubscribe: () => {

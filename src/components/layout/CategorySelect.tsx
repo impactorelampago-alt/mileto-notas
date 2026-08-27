@@ -8,7 +8,10 @@ import { useSharingStore } from '../../stores/sharing-store'
 import { useCategoryGroupsStore, type CategoryGroup } from '../../stores/category-groups-store'
 import { sectionDisplayLabel } from '../../lib/sections'
 import { isDoneStatus, getStatusBase } from '../../lib/status-keys'
-import { useProgramHistoryStore } from '../../stores/program-history-store'
+import {
+  canManageProgramWorkflow,
+  useProgramHistoryStore,
+} from '../../stores/program-history-store'
 
 const SECTION_COLORS = [
   '#3b82f6', '#10b981', '#ef4444', '#f59e0b',
@@ -60,7 +63,7 @@ export default function CategorySelect() {
   const programAccess = useProgramHistoryStore((s) => s.accessLevel)
   const setCategoryProgram = useProgramHistoryStore((s) => s.setCategoryProgram)
   const loadPrograms = useProgramHistoryStore((s) => s.loadPrograms)
-  const canConfigurePrograms = programAccess !== 'NONE'
+  const canConfigurePrograms = canManageProgramWorkflow(programAccess)
 
   const [isOpen, setIsOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)

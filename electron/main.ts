@@ -1,8 +1,10 @@
 import { app, BrowserWindow, shell, ipcMain, powerMonitor, dialog } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { fileURLToPath } from 'node:url'
+import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import Store from 'electron-store'
+import { ensureTxtExtension, safeTxtBaseName } from '../src/lib/note-export'
 
 const store = new Store({
   projectName: 'ops-notas',
@@ -220,6 +222,33 @@ ipcMain.on('window:new', () => {
 })
 
 ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false)
+
+// Exportação local da nota. O renderer envia somente título/conteúdo e o main
+// mantém a autoridade sobre caminho e escrita através do diálogo nativo.
+ipcMain.handle('note:export-txt', async (event, rawInput: unknown) => {
+  const input = rawInput as { title?: unknown; content?: unknown } | null
+  if (!input || typeof input.title !== 'string' || typeof input.content !== 'string') {
+    throw new Error('Dados inválidos para exportar a nota.')
+  }
+
+  const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+  const options: Electron.SaveDialogOptions = {
+    title: 'Baixar nota como TXT',
+    defaultPath: path.join(app.getPath('downloads'), `${safeTxtBaseName(input.title)}.txt`),
+    filters: [{ name: 'Arquivo de texto', extensions: ['txt'] }],
+    properties: ['showOverwriteConfirmation', 'createDirectory'],
+  }
+  const result = ownerWindow
+    ? await dialog.showSaveDialog(ownerWindow, options)
+    : await dialog.showSaveDialog(options)
+
+  if (result.canceled || !result.filePath) {
+    return { saved: false, cancelled: true }
+  }
+
+  await writeFile(ensureTxtExtension(result.filePath), input.content, { encoding: 'utf8' })
+  return { saved: true, cancelled: false }
+})
 
 // Session persistence via electron-store
 ipcMain.handle('session:get', (_event, key: string) => {

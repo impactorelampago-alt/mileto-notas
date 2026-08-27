@@ -16,6 +16,7 @@ import {
   loadDrafts,
 } from '../lib/local-drafts'
 import { loadCompletedOrigins, persistCompletedOrigins } from '../lib/completed-origins'
+import { useCollabStore } from './collab-store'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
@@ -275,6 +276,74 @@ async function notesFetch<T>(path: string): Promise<T[]> {
   }
 }
 
+interface NoteServerStatus {
+  id: string
+  is_archived: boolean
+}
+
+interface CachedChildReference {
+  id: string
+  parentNoteId: string
+}
+
+/**
+ * Confirma POSITIVAMENTE quais filhas ausentes do snapshot ativo já não são
+ * pendências no servidor:
+ * - a linha ainda existe com `is_archived=true`; ou
+ * - a linha não existe mais, mas a raiz continua legível (DELETE confirmado).
+ *
+ * Se a raiz também não estiver legível, pode ser RLS/troca de acesso; se qualquer
+ * consulta falhar, pode ser rede. Nos dois casos a cópia local é preservada.
+ */
+async function fetchInactiveNoteIds(candidates: CachedChildReference[]): Promise<Set<string>> {
+  const inactiveIds = new Set<string>()
+  const uniqueCandidates = Array.from(
+    new Map(candidates.map((candidate) => [candidate.id, candidate])).values(),
+  )
+
+  for (let i = 0; i < uniqueCandidates.length; i += 100) {
+    const batch = uniqueCandidates.slice(i, i + 100)
+    const idList = batch
+      .map((candidate) => `"${candidate.id}"`)
+      .join(',')
+
+    let rows: NoteServerStatus[]
+    try {
+      rows = await notesFetch<NoteServerStatus>(
+        `notes?select=id,is_archived&id=in.(${idList})`,
+      )
+    } catch (error) {
+      // Falha fechada: sem confirmação do servidor, preserva a cópia local.
+      console.warn('[notes] fetchInactiveNoteIds:', error)
+      continue
+    }
+
+    const rowsById = new Map(rows.map((row) => [row.id, row]))
+    for (const row of rows) {
+      if (row.is_archived) inactiveIds.add(row.id)
+    }
+
+    const missing = batch.filter((candidate) => !rowsById.has(candidate.id))
+    if (missing.length === 0) continue
+
+    const parentIds = Array.from(new Set(missing.map((candidate) => candidate.parentNoteId)))
+    const parentIdList = parentIds.map((id) => `"${id}"`).join(',')
+    try {
+      const visibleRoots = await notesFetch<{ id: string }>(
+        `notes?select=id&id=in.(${parentIdList})`,
+      )
+      const visibleRootIds = new Set(visibleRoots.map((root) => root.id))
+      for (const candidate of missing) {
+        if (visibleRootIds.has(candidate.parentNoteId)) inactiveIds.add(candidate.id)
+      }
+    } catch (error) {
+      // Sem confirmar que a raiz ainda é visível, ausência pode ser RLS/rede.
+      console.warn('[notes] fetchInactiveNoteIds roots:', error)
+    }
+  }
+  return inactiveIds
+}
+
 async function notesDelete(table: string, id: string): Promise<{ count: number; error: string | null }> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 5000)
@@ -410,6 +479,10 @@ interface NotesState {
   /** Nº de rascunhos locais pendentes de subir pra nuvem (indicador de sincronização). */
   pendingSync: number
   refreshPendingSync: () => Promise<void>
+  /** Remove uma subnota arquivada/excluída do estado e descarta buffers obsoletos. */
+  removeInactiveNoteLocally: (noteId: string, parentNoteId?: string | null) => void
+  /** Confirma no servidor e remove somente se a subnota deixou de ser uma pendência. */
+  removeIfInactiveOnServer: (noteId: string, parentNoteId: string) => Promise<boolean>
   syncNotesFromTaskDescriptions: () => void
   ensureNotesForOrphanTasks: () => Promise<void>
   createNote: (options?: { title?: string; categoryId?: string | null; sectionSuffix?: string | null }) => Promise<Note | null>
@@ -448,6 +521,34 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
   hasLoadedOnce: false,
   completedOrigins: loadCompletedOrigins(),
   pendingSync: 0,
+
+  removeInactiveNoteLocally: (noteId, parentNoteId) => {
+    const cached = get().notes.find((note) => note.id === noteId)
+    const fallbackTabId = parentNoteId ?? cached?.parent_note_id ?? null
+
+    // A conclusão no servidor encerra esta entrega. Um draft antigo não pode
+    // mantê-la visível nem reaparecer no próximo flush/reinício.
+    useCollabStore.getState().discardNote(noteId)
+    clearPendingDraft(noteId)
+    set((state) => ({
+      notes: state.notes.filter((note) => note.id !== noteId),
+      openTabs: state.openTabs.filter((id) => id !== noteId),
+      activeTabId: state.activeTabId === noteId ? fallbackTabId : state.activeTabId,
+      pendingSync: _pendingDraftIds.size,
+    }))
+    void removeDraft(noteId).then(
+      () => { void get().refreshPendingSync() },
+      () => { void get().refreshPendingSync() },
+    )
+  },
+
+  removeIfInactiveOnServer: async (noteId, parentNoteId) => {
+    const gen = _viewGeneration
+    const inactiveIds = await fetchInactiveNoteIds([{ id: noteId, parentNoteId }])
+    if (_viewGeneration !== gen || !inactiveIds.has(noteId)) return false
+    get().removeInactiveNoteLocally(noteId, parentNoteId)
+    return true
+  },
 
   loadNotes: async () => {
     const authState = useAuthStore.getState()
@@ -748,27 +849,29 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // Troca de conta durante os fetches acima invalida este resultado.
     if (_viewGeneration !== gen) return
 
+    // Uma subnota concluída/excluída por OUTRA pessoa não vem no snapshot ativo.
+    // Se o realtime perdeu o evento, ela pode continuar presa no cache porque uma
+    // aba aberta/rascunho era preservada. Confirma archive OU delete no servidor;
+    // rede/RLS continuam falhando de forma fechada e preservando a cópia local.
+    const fetchedIds = new Set(fetched.map((note) => note.id))
+    const missingCachedNotes = get().notes
+      .filter((note) => (
+        note.parent_note_id
+        && okRoots.has(note.parent_note_id)
+        && !fetchedIds.has(note.id)
+      ))
+      .map((note) => ({ id: note.id, parentNoteId: note.parent_note_id! }))
+    const inactiveIds = await fetchInactiveNoteIds(missingCachedNotes)
+    if (_viewGeneration !== gen) return
+    for (const noteId of inactiveIds) {
+      const cached = missingCachedNotes.find((note) => note.id === noteId)
+      get().removeInactiveNoteLocally(noteId, cached?.parentNoteId)
+    }
+
     set((s) => {
-      const fetchedIds = new Set(fetched.map((n) => n.id))
       const byId = new Map(s.notes.map((n) => [n.id, n]))
       let changed = false
-      // (1) Reconcilia DELEÇÃO: subnota de uma raiz consultada (lote OK) que NÃO voltou
-      // foi apagada por quem tem acesso — remove o fantasma (senão o bloco de preservação
-      // do loadNotes a re-injetaria). Não remove aba aberta (evita aba órfã) nem rascunho
-      // pendente (edição local ainda não sincronizada).
-      for (const n of s.notes) {
-        if (
-          n.parent_note_id &&
-          okRoots.has(n.parent_note_id) &&
-          !fetchedIds.has(n.id) &&
-          !s.openTabs.includes(n.id) &&
-          !_pendingDraftIds.has(n.id)
-        ) {
-          byId.delete(n.id)
-          changed = true
-        }
-      }
-      // (2) Adiciona as subnotas novas E ATUALIZA o conteúdo das já carregadas.
+      // Adiciona as subnotas novas E ATUALIZA o conteúdo das já carregadas.
       // Esta é a REDE DE SEGURANÇA do conteúdo de subnota: o realtime é best-effort e,
       // se cair (sleep/queda de rede), a subnota ALHEIA ficava CONGELADA — o loadNotes só
       // PRESERVA a cópia local de subnota de terceiro (não refaz o conteúdo) e este loader
@@ -1700,23 +1803,25 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     // Troca de conta/visão durante os awaits acima invalida este resultado.
     if (_viewGeneration !== gen) return null
 
+    // Mesmo critério do polling global: se o snapshot ativo não trouxe um filho
+    // que ainda está no cache, confirma se ele foi arquivado. Isso fecha na hora a
+    // aba ativa após uma re-assinatura do realtime, sem esperar o próximo poll.
+    const remoteIds = new Set(relatedNotes.map((relatedNote) => relatedNote.id))
+    const missingCachedNotes = get().notes
+      .filter((cachedNote) => (
+        cachedNote.parent_note_id === rootNoteId
+        && !remoteIds.has(cachedNote.id)
+      ))
+      .map((cachedNote) => ({ id: cachedNote.id, parentNoteId: rootNoteId }))
+    const inactiveIds = await fetchInactiveNoteIds(missingCachedNotes)
+    if (_viewGeneration !== gen) return null
+    for (const inactiveId of inactiveIds) {
+      get().removeInactiveNoteLocally(inactiveId, rootNoteId)
+    }
+
     set((state) => {
       const merged = new Map<string, Note>()
       for (const existingNote of state.notes) merged.set(existingNote.id, existingNote)
-      const remoteIds = new Set(relatedNotes.map((relatedNote) => relatedNote.id))
-
-      // O snapshot desta raiz respondeu inteiro: remove filhos remotos que sumiram,
-      // preservando abas abertas e rascunhos locais ainda não confirmados.
-      for (const existingNote of state.notes) {
-        if (
-          existingNote.parent_note_id === rootNoteId &&
-          !remoteIds.has(existingNote.id) &&
-          !state.openTabs.includes(existingNote.id) &&
-          !_pendingDraftIds.has(existingNote.id)
-        ) {
-          merged.delete(existingNote.id)
-        }
-      }
 
       for (const relatedNote of relatedNotes) {
         const local = merged.get(relatedNote.id)
@@ -1752,6 +1857,7 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       return { notes: arr }
     })
 
+    if (inactiveIds.has(note.id)) return null
     return get().notes.find((n) => n.id === note.id) ?? note
   },
 
@@ -1802,19 +1908,14 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         (payload) => {
           const updated = payload.new as Note
 
-          set((state) => {
-            // Concluir uma subnota de programa usa is_archived=true. Ela deixa a
-            // árvore ativa imediatamente, inclusive em outras sessões abertas.
-            if (updated.parent_note_id && updated.is_archived) {
-              return {
-                notes: state.notes.filter((note) => note.id !== updated.id),
-                openTabs: state.openTabs.filter((id) => id !== updated.id),
-                activeTabId: state.activeTabId === updated.id
-                  ? updated.parent_note_id
-                  : state.activeTabId,
-              }
-            }
+          // Concluir uma subnota de programa usa is_archived=true. Ela deixa a
+          // árvore ativa imediatamente, inclusive em outras sessões abertas.
+          if (updated.parent_note_id && updated.is_archived) {
+            get().removeInactiveNoteLocally(updated.id, updated.parent_note_id)
+            return
+          }
 
+          set((state) => {
             const localNote = state.notes.find((n) => n.id === updated.id)
             if (!localNote) return state
 
@@ -1850,28 +1951,24 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
         { event: '*', schema: 'public', table: 'notes', filter: `parent_note_id=eq.${rootId}` },
         (payload) => {
           const rowId = (payload.new as Note)?.id ?? (payload.old as { id?: string })?.id
-          if (!rowId || rowId === noteId) return // a nota ativa é tratada pelo handler (1)
+          if (!rowId) return
 
           if (payload.eventType === 'DELETE') {
-            set((state) => {
-              // Não remove aba aberta nem rascunho pendente (evita aba órfã/perda local).
-              if (state.openTabs.includes(rowId) || _pendingDraftIds.has(rowId)) return state
-              if (!state.notes.some((n) => n.id === rowId)) return state
-              return { notes: state.notes.filter((n) => n.id !== rowId) }
-            })
+            // DELETE confirmado pelo Realtime é autoridade do servidor, inclusive
+            // quando a filha apagada é a própria nota ativa (antes era ignorada).
+            get().removeInactiveNoteLocally(rowId, rootId)
             return
           }
 
-          const row = payload.new as Note
-          set((state) => {
-            if (row.is_archived) {
-              return {
-                notes: state.notes.filter((note) => note.id !== row.id),
-                openTabs: state.openTabs.filter((id) => id !== row.id),
-                activeTabId: state.activeTabId === row.id ? rootId : state.activeTabId,
-              }
-            }
+          if (rowId === noteId) return // UPDATE da nota ativa é tratado pelo handler (1)
 
+          const row = payload.new as Note
+          if (row.is_archived) {
+            get().removeInactiveNoteLocally(row.id, row.parent_note_id)
+            return
+          }
+
+          set((state) => {
             const local = state.notes.find((n) => n.id === row.id)
             if (local) {
               // UPDATE de subnota: respeita edição local pendente / mais nova.

@@ -36,6 +36,7 @@ export default function ProgramHistory() {
   const reopenItem = useProgramHistoryStore((state) => state.reopenItem)
 
   const selectedProgram = programs.find((program) => program.id === selectedProgramId) ?? null
+  const isReporterView = accessLevel === 'REPORTER'
   const reporters = metrics.filter((metric) => metric.reported_count > 0)
   const developers = metrics.filter((metric) => metric.completed_count > 0)
 
@@ -75,7 +76,9 @@ export default function ProgramHistory() {
                 Histórico de programas
               </h1>
               <p style={{ color: '#71717a', fontSize: 10.5, marginTop: 2 }}>
-                Subnotas concluídas e indicadores de atividade
+                {isReporterView
+                  ? 'Suas solicitações concluídas e quem realizou cada correção'
+                  : 'Subnotas concluídas e indicadores de atividade'}
               </p>
             </div>
           </div>
@@ -147,32 +150,42 @@ export default function ProgramHistory() {
             <Code2 size={30} style={{ color: '#52525b', marginBottom: 10 }} />
             <p style={{ color: '#d4d4d8', fontSize: 13 }}>Nenhuma categoria foi marcada como programa.</p>
             <p style={{ color: '#71717a', fontSize: 11.5, marginTop: 5 }}>
-              Use o seletor de categorias para criar ou classificar um programa.
+              {isReporterView
+                ? 'Quando uma categoria for classificada como programa, suas solicitações aparecerão aqui.'
+                : 'Use o seletor de categorias para criar ou classificar um programa.'}
             </p>
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-[1320px] flex-col" style={{ gap: 18 }}>
-            <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <section className={`grid grid-cols-1 gap-3 ${isReporterView ? '' : 'lg:grid-cols-2'}`}>
               <MetricTable
                 icon={<Users size={15} />}
-                title="Solicitações enviadas"
-                subtitle={accessLevel === 'TEAM' ? 'Por responsável da nota principal' : 'Seus envios'}
+                title={isReporterView ? 'Suas solicitações enviadas' : 'Solicitações enviadas'}
+                subtitle={
+                  accessLevel === 'TEAM'
+                    ? 'Por responsável da nota principal'
+                    : isReporterView
+                      ? 'Concluídas no período selecionado'
+                      : 'Seus envios'
+                }
                 rows={reporters.map((metric) => ({
                   id: metric.user_id,
                   name: metric.user_name,
                   count: metric.reported_count,
                 }))}
               />
-              <MetricTable
-                icon={<UserCheck size={15} />}
-                title="Entregas concluídas"
-                subtitle={accessLevel === 'TEAM' ? 'Por pessoa que concluiu' : 'Suas entregas'}
-                rows={developers.map((metric) => ({
-                  id: metric.user_id,
-                  name: metric.user_name,
-                  count: metric.completed_count,
-                }))}
-              />
+              {!isReporterView && (
+                <MetricTable
+                  icon={<UserCheck size={15} />}
+                  title="Entregas concluídas"
+                  subtitle={accessLevel === 'TEAM' ? 'Por pessoa que concluiu' : 'Suas entregas'}
+                  rows={developers.map((metric) => ({
+                    id: metric.user_id,
+                    name: metric.user_name,
+                    count: metric.completed_count,
+                  }))}
+                />
+              )}
             </section>
 
             <section
@@ -182,10 +195,10 @@ export default function ProgramHistory() {
               <div className="flex items-center justify-between" style={{ padding: '13px 16px', borderBottom: '1px solid #303030' }}>
                 <div>
                   <h2 style={{ color: '#e4e4e7', fontSize: 13, fontWeight: 600 }}>
-                    Entregas — {selectedProgram?.name ?? 'Programa'}
+                    {isReporterView ? 'Suas solicitações' : 'Entregas'} — {selectedProgram?.name ?? 'Programa'}
                   </h2>
                   <p style={{ color: '#71717a', fontSize: 10.5, marginTop: 2 }}>
-                    {items.length} subnota{items.length === 1 ? '' : 's'} no período
+                    {items.length} {isReporterView ? 'solicitação' : 'subnota'}{items.length === 1 ? '' : 's'} no período
                   </p>
                 </div>
               </div>
@@ -202,15 +215,19 @@ export default function ProgramHistory() {
                 </div>
               ) : items.length === 0 ? (
                 <div style={{ padding: 32, color: '#71717a', fontSize: 12, textAlign: 'center' }}>
-                  Nenhuma subnota concluída neste período.
+                  {isReporterView
+                    ? 'Nenhuma solicitação sua foi concluída neste período.'
+                    : 'Nenhuma subnota concluída neste período.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full border-collapse" style={{ minWidth: 900 }}>
+                  <table className="w-full border-collapse" style={{ minWidth: isReporterView ? 760 : 900 }}>
                     <thead>
                       <tr style={{ color: '#71717a', fontSize: 10.5, textAlign: 'left' }}>
                         <th style={{ padding: '9px 14px', fontWeight: 600 }}>SUBNOTA</th>
-                        <th style={{ padding: '9px 12px', fontWeight: 600 }}>ENVIADA POR</th>
+                        {!isReporterView && (
+                          <th style={{ padding: '9px 12px', fontWeight: 600 }}>ENVIADA POR</th>
+                        )}
                         <th style={{ padding: '9px 12px', fontWeight: 600 }}>CONCLUÍDA POR</th>
                         <th style={{ padding: '9px 12px', fontWeight: 600 }}>PRIORIDADE</th>
                         <th style={{ padding: '9px 12px', fontWeight: 600 }}>CONCLUSÃO</th>
@@ -233,9 +250,11 @@ export default function ProgramHistory() {
                                 </div>
                               )}
                             </td>
-                            <td style={{ padding: '11px 12px' }}>
-                              {item.reporter_name || item.root_title || 'Usuário'}
-                            </td>
+                            {!isReporterView && (
+                              <td style={{ padding: '11px 12px' }}>
+                                {item.reporter_name || item.root_title || 'Usuário'}
+                              </td>
+                            )}
                             <td style={{ padding: '11px 12px' }}>
                               {item.completed_by_name || 'Usuário'}
                             </td>

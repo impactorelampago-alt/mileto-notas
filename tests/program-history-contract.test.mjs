@@ -10,10 +10,17 @@ const sharedCategoryMigration = readFileSync(
   new URL('../supabase/migrations/20260825123000_notas_shared_category_programs.sql', import.meta.url),
   'utf8',
 )
+const reporterHistoryMigration = readFileSync(
+  new URL('../supabase/migrations/20260827120000_notas_program_reporter_history.sql', import.meta.url),
+  'utf8',
+)
 const tabBar = readFileSync(new URL('../src/components/layout/TabBar.tsx', import.meta.url), 'utf8')
 const subnoteTree = readFileSync(new URL('../src/components/editor/SubnoteTree.tsx', import.meta.url), 'utf8')
 const categorySelect = readFileSync(new URL('../src/components/layout/CategorySelect.tsx', import.meta.url), 'utf8')
 const historyStore = readFileSync(new URL('../src/stores/program-history-store.ts', import.meta.url), 'utf8')
+const historyPage = readFileSync(new URL('../src/pages/ProgramHistory.tsx', import.meta.url), 'utf8')
+const notesStore = readFileSync(new URL('../src/stores/notes-store.ts', import.meta.url), 'utf8')
+const collabStore = readFileSync(new URL('../src/stores/collab-store.ts', import.meta.url), 'utf8')
 const editor = readFileSync(new URL('../src/components/editor/Editor.tsx', import.meta.url), 'utf8')
 
 test('program history accepts only subnotes and inherits the root task responsibility', () => {
@@ -38,11 +45,35 @@ test('history access includes management roles and the Ops programmer cargo', ()
   assert.match(migration, /RETURN CASE WHEN v_is_programmer THEN 'SELF' ELSE 'NONE' END/)
 })
 
-test('programmer metrics are restricted to the authenticated user', () => {
-  assert.match(migration, /v_team boolean := public\.notas_program_access_level\(\) = 'TEAM'/)
-  assert.match(migration, /WHERE v_team OR contribution\.person_id = v_uid/)
-  assert.match(migration, /ELSE 'Equipe'/)
+test('history audit rows remain private and programmer data is restricted to own work', () => {
+  assert.match(reporterHistoryMigration, /v_access = 'SELF' AND \(\s*history\.reporter_id = v_uid\s*OR history\.completed_by = v_uid/)
+  assert.match(reporterHistoryMigration, /v_access = 'SELF' AND contribution\.person_id = v_uid/)
   assert.match(migration, /REVOKE ALL ON TABLE public\.notas_program_history FROM PUBLIC, anon, authenticated/)
+})
+
+test('every internal employee gets a personal reporter view with the real completer', () => {
+  assert.match(reporterHistoryMigration, /IF v_account IS NULL THEN\s*RETURN 'NONE'/)
+  assert.match(reporterHistoryMigration, /RETURN 'REPORTER'/)
+  assert.match(reporterHistoryMigration, /v_access = 'REPORTER' AND history\.reporter_id = v_uid/)
+  assert.match(reporterHistoryMigration, /history\.completed_by_name_snapshot/)
+  assert.doesNotMatch(reporterHistoryMigration, /ELSE 'Equipe'/)
+  assert.match(historyStore, /'NONE' \| 'REPORTER' \| 'SELF' \| 'TEAM'/)
+  assert.match(historyStore, /access === 'REPORTER'/)
+  assert.match(historyPage, /accessLevel === 'REPORTER'/)
+  assert.match(historyPage, /quem realizou cada correção/)
+})
+
+test('reporter metrics contain only own submissions and all program writes stay blocked', () => {
+  assert.match(reporterHistoryMigration, /v_access = 'REPORTER'[\s\S]*?contribution\.person_id = v_uid[\s\S]*?contribution\.contribution_kind = 'REPORT'/)
+  assert.equal(
+    [...reporterHistoryMigration.matchAll(/notas_program_access_level\(\) NOT IN \('TEAM', 'SELF'\)/g)].length,
+    3,
+  )
+  assert.match(reporterHistoryMigration, /v_access IN \('TEAM', 'SELF'\)[\s\S]*?AS can_reopen/)
+  assert.match(historyStore, /function canManageProgramWorkflow/)
+  assert.match(categorySelect, /canConfigurePrograms = canManageProgramWorkflow\(programAccess\)/)
+  assert.match(subnoteTree, /canDeleteSubnotes = canEditRoot && \(!isProgramRoot \|\| canManageProgramTasks\)/)
+  assert.match(historyPage, /!isReporterView && \(/)
 })
 
 test('categories can be classified as programs and history is loaded only through RPCs', () => {
@@ -70,4 +101,18 @@ test('completion snapshots the active editor before the subnote is archived', ()
   assert.match(historyStore, /p_content: snapshot\.content/)
   assert.match(editor, /collabSession\.ytext\.toString\(\)/)
   assert.match(editor, /request\.snapshot = \{ title, content \}/)
+})
+
+test('completed or deleted subnotes disappear for every session even when realtime is missed', () => {
+  assert.match(historyStore, /removeInactiveNoteLocally\(noteId, note\.parent_note_id\)/)
+  assert.match(historyStore, /removeIfInactiveOnServer/)
+  assert.match(notesStore, /fetchInactiveNoteIds\(missingCachedNotes\)/)
+  assert.match(notesStore, /notes\?select=id,is_archived&id=in/)
+  assert.match(notesStore, /visibleRootIds\.has\(candidate\.parentNoteId\)/)
+  assert.match(notesStore, /payload\.eventType === 'DELETE'[\s\S]*?removeInactiveNoteLocally\(rowId, rootId\)/)
+  assert.match(notesStore, /openTabs: state\.openTabs\.filter\(\(id\) => id !== noteId\)/)
+  assert.match(notesStore, /removeDraft\(noteId\)/)
+  assert.match(notesStore, /discardNote\(noteId\)/)
+  assert.match(collabStore, /_discardedNoteIds\.add\(noteId\)/)
+  assert.match(editor, /if \(!current\) return/)
 })
