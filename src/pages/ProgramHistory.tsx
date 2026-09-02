@@ -5,6 +5,7 @@ import {
   type ProgramHistoryPeriod,
 } from '../stores/program-history-store'
 import { NOTE_PRIORITY_COLORS, NOTE_PRIORITY_LABELS, normalizePriority } from '../lib/note-priority'
+import ProgramResponsibilitySelect from '../components/programs/ProgramResponsibilitySelect'
 
 const PERIOD_LABELS: Record<ProgramHistoryPeriod, string> = {
   '30d': 'Últimos 30 dias',
@@ -201,6 +202,9 @@ export default function ProgramHistory() {
                     {items.length} {isReporterView ? 'solicitação' : 'subnota'}{items.length === 1 ? '' : 's'} no período
                   </p>
                 </div>
+                {selectedProgram && (
+                  <ProgramResponsibilitySelect program={selectedProgram} />
+                )}
               </div>
 
               {error && (

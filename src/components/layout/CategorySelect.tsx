@@ -12,6 +12,7 @@ import {
   canManageProgramWorkflow,
   useProgramHistoryStore,
 } from '../../stores/program-history-store'
+import ProgramResponsibilitySelect from '../programs/ProgramResponsibilitySelect'
 
 const SECTION_COLORS = [
   '#3b82f6', '#10b981', '#ef4444', '#f59e0b',
@@ -680,7 +681,8 @@ export default function CategorySelect() {
               // Categoria compartilhada COMIGO (de outro dono — subordinada).
               const isSharedWithMe = s.shared === true
               const isOwner = isCategoryOwner(s.key)
-              const isProgram = programs.some((program) => program.active && program.category_key === s.key)
+              const program = programs.find((item) => item.active && item.category_key === s.key) ?? null
+              const isProgram = program !== null
               // Ações de dono só para categorias custom que SÃO minhas. No modo
               // "Todos" (visão agregada de leitura) não há gerenciamento.
               const canManage = !viewAll && isOwner && !isSystem && !isSharedWithMe
@@ -772,6 +774,9 @@ export default function CategorySelect() {
                           <Users size={10} style={{ flexShrink: 0 }} />
                           Compartilhada
                         </span>
+                      )}
+                      {program && (
+                        <ProgramResponsibilitySelect program={program} compact />
                       )}
                     </span>
                   )}

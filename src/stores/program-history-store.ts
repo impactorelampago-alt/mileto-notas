@@ -4,6 +4,7 @@ import { useNotesStore } from './notes-store'
 import { useAuthStore } from './auth-store'
 
 export type ProgramAccessLevel = 'NONE' | 'REPORTER' | 'SELF' | 'TEAM'
+export type ProgramAssignmentAccess = 'NONE' | 'PROGRAMMER' | 'LEAD'
 export type ProgramHistoryPeriod = '30d' | '90d' | 'all'
 
 export function canManageProgramWorkflow(accessLevel: ProgramAccessLevel): boolean {
@@ -17,8 +18,18 @@ export interface NotasProgram {
   name: string
   color: string
   active: boolean
+  responsible_programmer_id: string | null
+  responsible_programmer_name_snapshot: string
+  responsible_assigned_at: string | null
+  responsible_assigned_by: string | null
   created_at: string
   updated_at: string
+}
+
+export interface ProgramProgrammer {
+  user_id: string
+  user_name: string
+  is_lead: boolean
 }
 
 export interface ProgramHistoryItem {
@@ -59,6 +70,9 @@ export interface ActiveNoteSnapshotRequest {
 interface ProgramHistoryState {
   programs: NotasProgram[]
   accessLevel: ProgramAccessLevel
+  assignmentAccess: ProgramAssignmentAccess
+  programmers: ProgramProgrammer[]
+  assigningProgramIds: Set<string>
   isLoaded: boolean
   isLoadingPrograms: boolean
   isHistoryOpen: boolean
@@ -72,6 +86,7 @@ interface ProgramHistoryState {
   loadPrograms: () => Promise<void>
   clear: () => void
   setCategoryProgram: (categoryKey: string, isProgram: boolean) => Promise<boolean>
+  assignProgram: (programId: string, programmerId: string | null) => Promise<boolean>
   openHistory: () => Promise<void>
   closeHistory: () => void
   selectProgram: (programId: string) => Promise<void>
@@ -100,6 +115,9 @@ function errorMessage(error: unknown, fallback: string): string {
 export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) => ({
   programs: [],
   accessLevel: 'NONE',
+  assignmentAccess: 'NONE',
+  programmers: [],
+  assigningProgramIds: new Set<string>(),
   isLoaded: false,
   isLoadingPrograms: false,
   isHistoryOpen: false,
@@ -119,25 +137,29 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
     }
 
     set({ isLoadingPrograms: true, error: null })
-    const [accessResult, programsResult] = await Promise.all([
+    const [accessResult, assignmentResult, programmersResult, programsResult] = await Promise.all([
       supabase.rpc('notas_program_access_level'),
+      supabase.rpc('notas_program_assignment_access'),
+      supabase.rpc('notas_programmer_options'),
       supabase
         .from('notas_programs')
-        .select('id,account_id,category_key,name,color,active,created_at,updated_at')
+        .select('id,account_id,category_key,name,color,active,responsible_programmer_id,responsible_programmer_name_snapshot,responsible_assigned_at,responsible_assigned_by,created_at,updated_at')
         .order('active', { ascending: false })
         .order('name', { ascending: true }),
     ])
 
     if (useAuthStore.getState().user?.id !== userId) return
 
-    if (accessResult.error || programsResult.error) {
+    if (accessResult.error || assignmentResult.error || programmersResult.error || programsResult.error) {
       const message = errorMessage(
-        accessResult.error ?? programsResult.error,
+        accessResult.error ?? assignmentResult.error ?? programmersResult.error ?? programsResult.error,
         'Não foi possível carregar as categorias de programa.',
       )
       console.error('[program-history] loadPrograms:', message)
       set({
         accessLevel: 'NONE',
+        assignmentAccess: 'NONE',
+        programmers: [],
         programs: [],
         isLoaded: true,
         isLoadingPrograms: false,
@@ -150,6 +172,12 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
     const access = accessResult.data
     const accessLevel: ProgramAccessLevel =
       access === 'TEAM' || access === 'SELF' || access === 'REPORTER' ? access : 'NONE'
+    const rawAssignmentAccess = assignmentResult.data
+    const assignmentAccess: ProgramAssignmentAccess =
+      rawAssignmentAccess === 'LEAD' || rawAssignmentAccess === 'PROGRAMMER'
+        ? rawAssignmentAccess
+        : 'NONE'
+    const programmers = (programmersResult.data ?? []) as ProgramProgrammer[]
     const programs = (programsResult.data ?? []) as NotasProgram[]
     const selectedStillExists = programs.some((program) => program.id === get().selectedProgramId)
     const selectedProgramId = selectedStillExists
@@ -158,6 +186,8 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
 
     set({
       accessLevel,
+      assignmentAccess,
+      programmers,
       programs,
       selectedProgramId,
       isLoaded: true,
@@ -169,6 +199,9 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
   clear: () => set({
     programs: [],
     accessLevel: 'NONE',
+    assignmentAccess: 'NONE',
+    programmers: [],
+    assigningProgramIds: new Set<string>(),
     isLoaded: false,
     isLoadingPrograms: false,
     isHistoryOpen: false,
@@ -198,6 +231,43 @@ export const useProgramHistoryStore = create<ProgramHistoryState>()((set, get) =
     }
     await get().loadPrograms()
     return true
+  },
+
+  assignProgram: async (programId, programmerId) => {
+    const { assignmentAccess, programs, assigningProgramIds } = get()
+    const program = programs.find((item) => item.id === programId)
+    const userId = useAuthStore.getState().user?.id ?? null
+    if (!program || !userId || assignmentAccess === 'NONE' || assigningProgramIds.has(programId)) {
+      return false
+    }
+    if (assignmentAccess === 'PROGRAMMER') {
+      const canChange = program.responsible_programmer_id === null
+        ? programmerId === userId
+        : program.responsible_programmer_id === userId && programmerId !== null
+      if (!canChange) return false
+    }
+
+    const nextAssigning = new Set(assigningProgramIds)
+    nextAssigning.add(programId)
+    set({ assigningProgramIds: nextAssigning, error: null })
+    try {
+      const { error } = await supabase.rpc('notas_assign_program_responsible', {
+        p_program_id: programId,
+        p_programmer_id: programmerId,
+      })
+      if (error) {
+        const message = errorMessage(error, 'Não foi possível alterar o responsável do programa.')
+        console.error('[program-history] assignProgram:', message)
+        set({ error: message })
+        return false
+      }
+      await get().loadPrograms()
+      return true
+    } finally {
+      const remaining = new Set(get().assigningProgramIds)
+      remaining.delete(programId)
+      set({ assigningProgramIds: remaining })
+    }
   },
 
   openHistory: async () => {

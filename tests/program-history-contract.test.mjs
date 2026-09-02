@@ -14,11 +14,19 @@ const reporterHistoryMigration = readFileSync(
   new URL('../supabase/migrations/20260827120000_notas_program_reporter_history.sql', import.meta.url),
   'utf8',
 )
+const responsibilityMigration = readFileSync(
+  new URL('../supabase/migrations/20260902120000_notas_program_responsibility.sql', import.meta.url),
+  'utf8',
+)
 const tabBar = readFileSync(new URL('../src/components/layout/TabBar.tsx', import.meta.url), 'utf8')
 const subnoteTree = readFileSync(new URL('../src/components/editor/SubnoteTree.tsx', import.meta.url), 'utf8')
 const categorySelect = readFileSync(new URL('../src/components/layout/CategorySelect.tsx', import.meta.url), 'utf8')
 const historyStore = readFileSync(new URL('../src/stores/program-history-store.ts', import.meta.url), 'utf8')
 const historyPage = readFileSync(new URL('../src/pages/ProgramHistory.tsx', import.meta.url), 'utf8')
+const responsibilitySelect = readFileSync(
+  new URL('../src/components/programs/ProgramResponsibilitySelect.tsx', import.meta.url),
+  'utf8',
+)
 const notesStore = readFileSync(new URL('../src/stores/notes-store.ts', import.meta.url), 'utf8')
 const collabStore = readFileSync(new URL('../src/stores/collab-store.ts', import.meta.url), 'utf8')
 const editor = readFileSync(new URL('../src/components/editor/Editor.tsx', import.meta.url), 'utf8')
@@ -115,4 +123,41 @@ test('completed or deleted subnotes disappear for every session even when realti
   assert.match(notesStore, /discardNote\(noteId\)/)
   assert.match(collabStore, /_discardedNoteIds\.add\(noteId\)/)
   assert.match(editor, /if \(!current\) return/)
+})
+
+test('program responsibility uses configured active programmer cargos', () => {
+  assert.match(responsibilityMigration, /notas_programmer_membership/)
+  assert.match(responsibilityMigration, /PROGRAMADORLIDER/)
+  assert.match(responsibilityMigration, /employment_status/)
+  assert.match(responsibilityMigration, /terminated_at IS NULL/)
+  assert.match(responsibilityMigration, /only configured programmers can assign programs/)
+  assert.match(responsibilityMigration, /programmer can only assume an unassigned program/)
+  assert.match(responsibilityMigration, /program already belongs to another programmer/)
+})
+
+test('responsibility transfers preserve an immutable audit and completion snapshot', () => {
+  assert.match(responsibilityMigration, /CREATE TABLE IF NOT EXISTS public\.notas_program_assignments/)
+  assert.match(responsibilityMigration, /REVOKE ALL ON TABLE public\.notas_program_assignments FROM PUBLIC, anon, authenticated/)
+  assert.match(responsibilityMigration, /responsible_programmer_id_snapshot/)
+  assert.match(responsibilityMigration, /BEFORE INSERT ON public\.notas_program_history/)
+})
+
+test('agent report sources isolate pending and completed work by responsible programmer', () => {
+  assert.match(responsibilityMigration, /notas_program_pending_report/)
+  assert.match(responsibilityMigration, /program\.responsible_programmer_id = v_target/)
+  assert.match(responsibilityMigration, /child\.is_archived = false/)
+  assert.match(responsibilityMigration, /notas_program_completed_report/)
+  assert.match(responsibilityMigration, /h\.responsible_programmer_id_snapshot = v_target/)
+  assert.match(responsibilityMigration, /h\.reopened_at IS NULL/)
+  assert.match(responsibilityMigration, /programmers can only read their own report/)
+})
+
+test('program responsibility is visible and editable only by the permitted programmer', () => {
+  assert.match(historyStore, /notas_program_assignment_access/)
+  assert.match(historyStore, /notas_programmer_options/)
+  assert.match(historyStore, /notas_assign_program_responsible/)
+  assert.match(responsibilitySelect, /assignmentAccess === 'LEAD'/)
+  assert.match(responsibilitySelect, /Assumir/)
+  assert.match(categorySelect, /ProgramResponsibilitySelect program=\{program\} compact/)
+  assert.match(historyPage, /ProgramResponsibilitySelect program=\{selectedProgram\}/)
 })
