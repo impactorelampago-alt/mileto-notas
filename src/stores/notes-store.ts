@@ -202,6 +202,8 @@ const SKEW_TOLERANCE_MS = 5000
 const _pendingDraftIds = new Set<string>()
 let _pendingDraftVersion = 0
 const _noteWriteQueues = new Map<string, Promise<void>>()
+type SubnoteLoadResult = { fetched: Note[]; okRootIds: string[] }
+const _subnoteLoadAttempts = new Map<string, Promise<SubnoteLoadResult>>()
 
 function markPendingDraft(noteId: string): void {
   if (_pendingDraftIds.has(noteId)) return
@@ -737,22 +739,23 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     const missing = tasks.map((t) => t.id).filter((id) => !loadedTaskIds.has(id))
     if (missing.length === 0) return
 
-    // Busca em lotes para não estourar o tamanho da URL.
-    const fetched: Note[] = []
+    // Busca em lotes para não estourar o tamanho da URL. Lotes independentes rodam
+    // juntos para que uma carteira grande espere uma latência, não uma por lote.
+    const batches: string[][] = []
     for (let i = 0; i < missing.length; i += 100) {
-      const idList = missing
-        .slice(i, i + 100)
-        .map((id) => `"${id}"`)
-        .join(',')
+      batches.push(missing.slice(i, i + 100))
+    }
+    const fetched = (await Promise.all(batches.map(async (batch) => {
+      const idList = batch.map((id) => `"${id}"`).join(',')
       try {
-        const rows = await notesFetch<Note>(
+        return await notesFetch<Note>(
           `notes?select=*&task_id=in.(${idList})&is_archived=eq.false`,
         )
-        fetched.push(...rows)
       } catch (e) {
         console.warn('[notes] loadNotesForVisibleTasks:', e)
+        return []
       }
-    }
+    }))).flat()
     if (fetched.length === 0) return
 
     // Flags de compartilhamento (categoria compartilhada → EDIT) p/ notas de terceiros.
@@ -824,25 +827,47 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       .map((n) => n.id)
     if (rootIds.length === 0) return
 
-    // Busca em lotes para não estourar o tamanho da URL. A RLS ("Users can view
-    // subnotes from accessible parent notes") só retorna as subnotas cuja raiz o
-    // usuário pode ver — nada de terceiro sem acesso vaza. `okRoots` = raízes cujo
-    // lote respondeu OK; só reconcilio deleção nelas (erro de rede não apaga nada).
-    const fetched: Note[] = []
-    const okRoots = new Set<string>()
-    for (let i = 0; i < rootIds.length; i += 100) {
-      const batch = rootIds.slice(i, i + 100)
-      const idList = batch.map((id) => `"${id}"`).join(',')
-      try {
-        const rows = await notesFetch<Note>(
-          `notes?select=*&parent_note_id=in.(${idList})&is_archived=eq.false`,
-        )
-        fetched.push(...rows)
-        for (const id of batch) okRoots.add(id)
-      } catch (e) {
-        console.warn('[notes] loadSubnotesForLoadedRoots:', e)
+    // Chamadas de boot, snapshot do Ops e polling podem chegar juntas. Compartilha
+    // a mesma leitura em voo e executa lotes independentes em paralelo, evitando
+    // consultas duplicadas e a soma de vários timeouts de rede.
+    const loadKey = `${gen}:${userId}:${[...rootIds].sort().join(',')}`
+    let loadAttempt = _subnoteLoadAttempts.get(loadKey)
+    if (!loadAttempt) {
+      loadAttempt = (async (): Promise<SubnoteLoadResult> => {
+        const batches: string[][] = []
+        for (let i = 0; i < rootIds.length; i += 100) {
+          batches.push(rootIds.slice(i, i + 100))
+        }
+        const results = await Promise.all(batches.map(async (batch) => {
+          const idList = batch.map((id) => `"${id}"`).join(',')
+          try {
+            const rows = await notesFetch<Note>(
+              `notes?select=*&parent_note_id=in.(${idList})&is_archived=eq.false`,
+            )
+            return { rows, rootIds: batch }
+          } catch (e) {
+            console.warn('[notes] loadSubnotesForLoadedRoots:', e)
+            return null
+          }
+        }))
+        return {
+          fetched: results.flatMap((result) => result?.rows ?? []),
+          okRootIds: results.flatMap((result) => result?.rootIds ?? []),
+        }
+      })()
+      _subnoteLoadAttempts.set(loadKey, loadAttempt)
+    }
+
+    let loadResult: SubnoteLoadResult
+    try {
+      loadResult = await loadAttempt
+    } finally {
+      if (_subnoteLoadAttempts.get(loadKey) === loadAttempt) {
+        _subnoteLoadAttempts.delete(loadKey)
       }
     }
+    const { fetched } = loadResult
+    const okRoots = new Set(loadResult.okRootIds)
     if (okRoots.size === 0) return // todos os lotes falharam — não mexe em nada
     // Troca de conta durante os fetches acima invalida este resultado.
     if (_viewGeneration !== gen) return

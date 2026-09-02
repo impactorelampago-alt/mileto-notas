@@ -74,8 +74,6 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
 
   loadShares: async () => {
     const uid = useAuthStore.getState().user?.id
-    let noteShares: Record<string, string[]> | null = null
-    let categoryShares: Record<string, string[]> | null = null
     const sharedWithMeNotes: Record<string, SharePermission> = {}
     const sharedWithMeCategories: Record<string, SharePermission> = {}
 
@@ -84,77 +82,85 @@ export const useSharingStore = create<SharingState>()((set, get) => ({
     // dono vê as categorias/notas compartilhadas COM o usuário que está visualizando.
     const effectiveUid = useAuthStore.getState().getEffectiveUserId()
 
-    if (uid) {
-      // note_shares (best-effort: se a tabela não existir, error vem preenchido → fallback)
-      try {
-        const { data, error } = await supabase
-          .from('note_shares')
-          .select('note_id, shared_with')
-          .eq('shared_by', uid)
-        if (!error && data) {
-          const rows = data as { note_id: string; shared_with: string }[]
-          noteShares = group(rows.map((r) => ({ k: r.note_id, u: r.shared_with })))
+    // As quatro consultas são independentes. Antes eram aguardadas em série e
+    // adicionavam até quatro latências de rede antes de qualquer nota aparecer.
+    // O cache local também é lido em paralelo para o fallback não alongar o boot.
+    const [ownedNotes, ownedCategories, incomingNotes, incomingCategories, localNotes, localCategories] = await Promise.all([
+      (async (): Promise<{ note_id: string; shared_with: string }[] | null> => {
+        if (!uid) return null
+        try {
+          const { data, error } = await supabase
+            .from('note_shares')
+            .select('note_id, shared_with')
+            .eq('shared_by', uid)
+          return !error && data ? data as { note_id: string; shared_with: string }[] : null
+        } catch {
+          return null
         }
-      } catch {
-        // back ainda não aplicado → fallback local
-      }
-      // category_shares
-      try {
-        const { data, error } = await supabase
-          .from('category_shares')
-          .select('category_key, shared_with')
-          .eq('shared_by', uid)
-        if (!error && data) {
-          const rows = data as { category_key: string; shared_with: string }[]
-          categoryShares = group(rows.map((r) => ({ k: r.category_key, u: r.shared_with })))
+      })(),
+      (async (): Promise<{ category_key: string; shared_with: string }[] | null> => {
+        if (!uid) return null
+        try {
+          const { data, error } = await supabase
+            .from('category_shares')
+            .select('category_key, shared_with')
+            .eq('shared_by', uid)
+          return !error && data ? data as { category_key: string; shared_with: string }[] : null
+        } catch {
+          return null
         }
-      } catch {
-        // fallback local
-      }
-
-      // ── Compartilhado COM O USUÁRIO EFETIVO ─────────────────────────────
-      // Impersonando, busca o que foi compartilhado com a conta visualizada. A RLS
-      // (category_shares/note_shares: shared_by=auth.uid() OR shared_with=auth.uid())
-      // permite ao dono ler essas rows porque foi ELE quem compartilhou (shared_by).
-      if (effectiveUid) {
-        // notas compartilhadas com o usuário efetivo
+      })(),
+      (async (): Promise<{ note_id: string; permission: SharePermission | null }[] | null> => {
+        if (!effectiveUid) return null
         try {
           const { data, error } = await supabase
             .from('note_shares')
             .select('note_id, permission')
             .eq('shared_with', effectiveUid)
-          if (!error && data) {
-            const rows = data as { note_id: string; permission: SharePermission | null }[]
-            for (const r of rows) {
-              sharedWithMeNotes[r.note_id] = r.permission === 'VIEW' ? 'VIEW' : 'EDIT'
-            }
-          }
+          return !error && data
+            ? data as { note_id: string; permission: SharePermission | null }[]
+            : null
         } catch {
-          // back ainda não aplicado
+          return null
         }
-        // categorias compartilhadas com o usuário efetivo (sem coluna permission ainda → EDIT)
+      })(),
+      (async (): Promise<{ category_key: string }[] | null> => {
+        if (!effectiveUid) return null
         try {
           const { data, error } = await supabase
             .from('category_shares')
             .select('category_key')
             .eq('shared_with', effectiveUid)
-          if (!error && data) {
-            const rows = data as { category_key: string }[]
-            for (const r of rows) {
-              sharedWithMeCategories[r.category_key] = 'EDIT'
-            }
-          }
+          return !error && data ? data as { category_key: string }[] : null
         } catch {
-          // back ainda não aplicado
+          return null
         }
-      }
+      })(),
+      loadLocal(NOTE_KEY),
+      loadLocal(CATEGORY_KEY),
+    ])
+
+    // Se a identidade mudou enquanto as consultas estavam em voo, esta fotografia
+    // não pode sobrescrever os compartilhamentos da conta nova.
+    const currentAuth = useAuthStore.getState()
+    if (currentAuth.user?.id !== uid || currentAuth.getEffectiveUserId() !== effectiveUid) return
+
+    const noteShares = ownedNotes
+      ? group(ownedNotes.map((row) => ({ k: row.note_id, u: row.shared_with })))
+      : localNotes
+    const categoryShares = ownedCategories
+      ? group(ownedCategories.map((row) => ({ k: row.category_key, u: row.shared_with })))
+      : localCategories
+    for (const row of incomingNotes ?? []) {
+      sharedWithMeNotes[row.note_id] = row.permission === 'VIEW' ? 'VIEW' : 'EDIT'
+    }
+    for (const row of incomingCategories ?? []) {
+      sharedWithMeCategories[row.category_key] = 'EDIT'
     }
 
-    const nShares = noteShares ?? (await loadLocal(NOTE_KEY))
-    const cShares = categoryShares ?? (await loadLocal(CATEGORY_KEY))
     set({
-      noteShares: nShares,
-      categoryShares: cShares,
+      noteShares,
+      categoryShares,
       sharedWithMeNotes,
       sharedWithMeCategories,
     })

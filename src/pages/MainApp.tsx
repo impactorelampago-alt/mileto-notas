@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAuthStore } from '../stores/auth-store'
 import { useNotesStore } from '../stores/notes-store'
 import { useCategoriesStore } from '../stores/categories-store'
@@ -7,19 +8,10 @@ import { useOpsStore, HIDDEN_LEGACY_SUFFIXES } from '../stores/ops-store'
 import Titlebar from '../components/layout/Titlebar'
 import TabBar from '../components/layout/TabBar'
 import StatusBar from '../components/layout/StatusBar'
-import Editor from '../components/editor/Editor'
 import SearchBar from '../components/editor/SearchBar'
 import CategoryModal from '../components/ui/CategoryModal'
 import AssignCategoryModal from '../components/ui/AssignCategoryModal'
-import CollaboratorsModal from '../components/ui/CollaboratorsModal'
-import SharedNotesModal from '../components/ui/SharedNotesModal'
-import DeleteNoteModal from '../components/ui/DeleteNoteModal'
-import DeleteSectionModal from '../components/ui/DeleteSectionModal'
-import ConnectModal from '../components/ui/ConnectModal'
-import QuickSearch from '../components/ui/QuickSearch'
-import SharePickerModal from '../components/ui/SharePickerModal'
 import ConfirmModal from '../components/ui/ConfirmModal'
-import ProgramHistory from './ProgramHistory'
 import { useSharingStore } from '../stores/sharing-store'
 import { useNotificationsStore } from '../stores/notifications-store'
 import { useWorkspacePresenceStore } from '../stores/workspace-presence-store'
@@ -34,6 +26,18 @@ import {
 import { DEFAULT_SECTION_SUFFIX } from '../lib/sections'
 import { getStatusBase } from '../lib/status-keys'
 import { useProgramHistoryStore } from '../stores/program-history-store'
+
+// Editor, histórico e modais raros ficam fora do pacote inicial. O shell do app
+// aparece primeiro e o Electron só interpreta esses módulos quando forem usados.
+const Editor = lazy(() => import('../components/editor/Editor'))
+const ProgramHistory = lazy(() => import('./ProgramHistory'))
+const CollaboratorsModal = lazy(() => import('../components/ui/CollaboratorsModal'))
+const SharedNotesModal = lazy(() => import('../components/ui/SharedNotesModal'))
+const DeleteNoteModal = lazy(() => import('../components/ui/DeleteNoteModal'))
+const DeleteSectionModal = lazy(() => import('../components/ui/DeleteSectionModal'))
+const ConnectModal = lazy(() => import('../components/ui/ConnectModal'))
+const QuickSearch = lazy(() => import('../components/ui/QuickSearch'))
+const SharePickerModal = lazy(() => import('../components/ui/SharePickerModal'))
 
 export default function MainApp() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -52,7 +56,22 @@ export default function MainApp() {
   const loadNotesWithCollaborators = useNotesStore((s) => s.loadNotesWithCollaborators)
   const deleteNote = useNotesStore((s) => s.deleteNote)
   const closeTab = useNotesStore((s) => s.closeTab)
-  const notes = useNotesStore((s) => s.notes)
+  // O conteúdo da nota muda a cada tecla. MainApp só precisa do contexto estável
+  // da raiz ativa; useShallow impede que digitar re-renderize toda a aplicação.
+  const activeNoteContext = useNotesStore(useShallow((s) => {
+    const activeNote = s.activeTabId
+      ? s.notes.find((note) => note.id === s.activeTabId) ?? null
+      : null
+    const rootId = activeNote?.parent_note_id ?? s.activeTabId
+    const rootNote = rootId
+      ? s.notes.find((note) => note.id === rootId) ?? null
+      : null
+    return {
+      rootId,
+      clientId: rootNote?.client_id ?? null,
+      taskId: rootNote?.task_id ?? null,
+    }
+  }))
   const loadCategories = useCategoriesStore((s) => s.loadCategories)
   const loadTeamProfiles = useAuthStore((s) => s.loadTeamProfiles)
   const loadShares = useSharingStore((s) => s.loadShares)
@@ -81,7 +100,10 @@ export default function MainApp() {
   const setActiveTab = useNotesStore((s) => s.setActiveTab)
   const hasLoadedOnce = useNotesStore((s) => s.hasLoadedOnce)
   const createNote = useNotesStore((s) => s.createNote)
-  const { loadOpsData, subscribeToOpsChanges, unsubscribeFromOpsChanges, setupAutoReconciliation } = useOpsStore()
+  const loadOpsData = useOpsStore((s) => s.loadOpsData)
+  const subscribeToOpsChanges = useOpsStore((s) => s.subscribeToOpsChanges)
+  const unsubscribeFromOpsChanges = useOpsStore((s) => s.unsubscribeFromOpsChanges)
+  const setupAutoReconciliation = useOpsStore((s) => s.setupAutoReconciliation)
   const loadCategoryGroups = useCategoryGroupsStore((s) => s.loadGroups)
   const clearCategoryGroups = useCategoryGroupsStore((s) => s.clear)
   const loadPrograms = useProgramHistoryStore((s) => s.loadPrograms)
@@ -99,15 +121,14 @@ export default function MainApp() {
     // (quem dá pra entrar) e pelo editor (entrar só lendo vs editando).
     void useAuthStore.getState().loadPermissionSets()
     // Os mapas de "compartilhado-comigo" precisam estar prontos ANTES de
-    // notes-store/ops-store montarem as notas e seções compartilhadas. Encadeia:
-    // carrega shares → recarrega notas + reagenda o refresh do Ops.
+    // notes-store/ops-store montarem o snapshot. Inicializar os dois juntos depois
+    // disso evita o antigo refresh integral duplicado de `shares-loaded`.
     void (async () => {
       await loadShares()
-      void loadNotes()
-      useOpsStore.getState().scheduleOpsRefresh('shares-loaded')
+      await Promise.all([loadNotes(), loadOpsData()])
     })()
 
-  }, [isAuthenticated, loadNotes, loadCategories, loadNotesWithCollaborators, loadTeamProfiles, loadShares])
+  }, [isAuthenticated, loadNotes, loadCategories, loadNotesWithCollaborators, loadTeamProfiles, loadShares, loadOpsData])
 
   // Classificação de categorias como programa + nível de acesso ao histórico.
   // A definição é carregada para todos (inclusive quem só envia demandas); as
@@ -130,11 +151,11 @@ export default function MainApp() {
     void loadCategoryGroups()
   }, [isAuthenticated, effectiveUserId, loadCategoryGroups, clearCategoryGroups])
 
-  // Ops sync: load data + Realtime subscription + auto-reconciliation on focus
+  // Ops sync: o snapshot inicial é coordenado acima, depois que shares chegam.
+  // Aqui ficam apenas Realtime e a reconciliação automática.
   useEffect(() => {
     if (!isAuthenticated) return
 
-    void loadOpsData()
     subscribeToOpsChanges()
     const cleanupReconciliation = setupAutoReconciliation()
 
@@ -142,7 +163,7 @@ export default function MainApp() {
       unsubscribeFromOpsChanges()
       cleanupReconciliation()
     }
-  }, [isAuthenticated]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, subscribeToOpsChanges, unsubscribeFromOpsChanges, setupAutoReconciliation])
 
   // Sino de notificações (tarefa concluída): carrega + assina o Realtime.
   // Sempre do usuário REAL logado — limpa ao deslogar/trocar de sessão.
@@ -171,11 +192,8 @@ export default function MainApp() {
   // Publica a nota-RAIZ ativa (subnota → sua raiz; raiz → ela mesma, igual ao TabBar).
   useEffect(() => {
     if (!isAuthenticated) return
-    const rootId = activeTabId
-      ? (notes.find((n) => n.id === activeTabId)?.parent_note_id ?? activeTabId)
-      : null
-    useWorkspacePresenceStore.getState().setCurrentRoot(rootId)
-  }, [isAuthenticated, activeTabId, notes])
+    useWorkspacePresenceStore.getState().setCurrentRoot(activeNoteContext.rootId)
+  }, [isAuthenticated, activeNoteContext.rootId])
 
   // Persiste a sessão (abas abertas + aba ativa) localmente, para restauração
   // silenciosa estilo Bloco de Notas do Windows 11. Só grava depois do restore
@@ -358,10 +376,8 @@ export default function MainApp() {
 
   if (!isAuthenticated) return null
 
-  // Nota raiz da aba ativa: se a ativa é subnota, a raiz é o pai; senão é ela mesma.
-  // Usada pelos modais que operam no nível da raiz (compartilhar/conectar).
-  const activeNote = activeTabId ? notes.find((n) => n.id === activeTabId) ?? null : null
-  const activeRootNoteId = activeNote?.parent_note_id ?? activeTabId
+  // Nota raiz da aba ativa: usada pelos modais de compartilhamento/conexão.
+  const activeRootNoteId = activeNoteContext.rootId
 
   const handleCategoryConfirm = (name: string, color: string) => {
     setShowCategoryModal(false)
@@ -386,7 +402,9 @@ export default function MainApp() {
     <div className="flex h-screen flex-col overflow-hidden">
       <Titlebar />
       {isProgramHistoryOpen ? (
-        <ProgramHistory />
+        <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-zinc-500">Abrindo histórico...</div>}>
+          <ProgramHistory />
+        </Suspense>
       ) : (
         <>
           <TabBar />
@@ -394,7 +412,9 @@ export default function MainApp() {
             visible={searchBarVisible}
             onClose={() => setSearchBarVisible(false)}
           />
-          <Editor />
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-zinc-500">Abrindo suas notas...</div>}>
+            <Editor />
+          </Suspense>
           <StatusBar />
         </>
       )}
@@ -420,63 +440,65 @@ export default function MainApp() {
         onCancel={() => setEditingCategoryId(null)}
       />
 
-      {showSharedNotesModal && (
-        <SharedNotesModal
-          onClose={() => setShowSharedNotesModal(false)}
-          onOpenNote={async (noteId) => {
-            await fetchNoteById(noteId)
-            openTab(noteId)
-            setShowSharedNotesModal(false)
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {showSharedNotesModal && (
+          <SharedNotesModal
+            onClose={() => setShowSharedNotesModal(false)}
+            onOpenNote={async (noteId) => {
+              await fetchNoteById(noteId)
+              openTab(noteId)
+              setShowSharedNotesModal(false)
+            }}
+          />
+        )}
 
-      {showDeleteNoteModal && activeTabId && (
-        <DeleteNoteModal
-          onClose={() => setShowDeleteNoteModal(false)}
-          onConfirm={() => {
-            const noteId = activeTabId
-            setShowDeleteNoteModal(false)
-            closeTab(noteId)
-            void deleteNote(noteId)
-          }}
-        />
-      )}
+        {showDeleteNoteModal && activeTabId && (
+          <DeleteNoteModal
+            onClose={() => setShowDeleteNoteModal(false)}
+            onConfirm={() => {
+              const noteId = activeTabId
+              setShowDeleteNoteModal(false)
+              closeTab(noteId)
+              void deleteNote(noteId)
+            }}
+          />
+        )}
 
-      {deleteSectionKeySuffix && (
-        <DeleteSectionModal
-          keySuffix={deleteSectionKeySuffix}
-          onClose={() => setDeleteSectionKeySuffix(null)}
-        />
-      )}
+        {deleteSectionKeySuffix && (
+          <DeleteSectionModal
+            keySuffix={deleteSectionKeySuffix}
+            onClose={() => setDeleteSectionKeySuffix(null)}
+          />
+        )}
 
-      {showConnectModal && activeRootNoteId && (
-        <ConnectModal
-          key={activeRootNoteId}
-          noteId={activeRootNoteId}
-          currentClientId={notes.find((n) => n.id === activeRootNoteId)?.client_id ?? null}
-          currentTaskId={notes.find((n) => n.id === activeRootNoteId)?.task_id ?? null}
-          onClose={() => setShowConnectModal(false)}
-        />
-      )}
+        {showConnectModal && activeRootNoteId && (
+          <ConnectModal
+            key={activeRootNoteId}
+            noteId={activeRootNoteId}
+            currentClientId={activeNoteContext.clientId}
+            currentTaskId={activeNoteContext.taskId}
+            onClose={() => setShowConnectModal(false)}
+          />
+        )}
 
-      {showCollaboratorsModal && activeRootNoteId && (
-        <CollaboratorsModal
-          noteId={activeRootNoteId}
-          onClose={() => setShowCollaboratorsModal(false)}
-        />
-      )}
+        {showCollaboratorsModal && activeRootNoteId && (
+          <CollaboratorsModal
+            noteId={activeRootNoteId}
+            onClose={() => setShowCollaboratorsModal(false)}
+          />
+        )}
 
-      {showQuickSearch && <QuickSearch />}
+        {showQuickSearch && <QuickSearch />}
 
-      {sharePickerTarget && (
-        <SharePickerModal
-          kind={sharePickerTarget.kind}
-          id={sharePickerTarget.id}
-          label={sharePickerTarget.label}
-          onClose={() => setSharePickerTarget(null)}
-        />
-      )}
+        {sharePickerTarget && (
+          <SharePickerModal
+            kind={sharePickerTarget.kind}
+            id={sharePickerTarget.id}
+            label={sharePickerTarget.label}
+            onClose={() => setSharePickerTarget(null)}
+          />
+        )}
+      </Suspense>
 
       <ConfirmModal />
     </div>

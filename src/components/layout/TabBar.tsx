@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, Pin, Plus, Users, X, LogOut } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useNotesStore } from '../../stores/notes-store'
 import { useOpsStore, SYSTEM_SUFFIXES, HIDDEN_LEGACY_SUFFIXES } from '../../stores/ops-store'
 import { useAuthStore } from '../../stores/auth-store'
@@ -28,18 +29,31 @@ const PRIORITY_PICK_ORDER: NotePriority[] = ['URGENT', 'HIGH', 'MEDIUM', 'LOW']
  * com o Mileto Ops); clicar abre o seletor de urgencia. Duplo-clique no titulo renomeia.
  */
 export default function TabBar() {
-  const {
-    activeTabId,
-    notes,
-    setActiveTab,
-    openTab,
-    createNote,
-    noteIdsWithCollaborators,
-    deleteNote,
-    updateNote,
-    toggleComplete,
-    completedOrigins,
-  } = useNotesStore()
+  // Conteúdo muda a cada tecla, mas a barra só usa metadados. A assinatura rasa
+  // abaixo evita reconstruir todas as abas durante a digitação; em qualquer outro
+  // render lemos a fotografia mais recente diretamente do store.
+  useNotesStore(useShallow((s) => s.notes.flatMap((note) => [
+    note.id,
+    note.title,
+    note.priority,
+    note.parent_note_id,
+    note.task_id,
+    note.creator_id,
+    note.is_pinned,
+    note.is_shared_with_me ?? false,
+    note.shared_permission ?? null,
+    note.created_at,
+  ])))
+  const notes = useNotesStore.getState().notes
+  const activeTabId = useNotesStore((s) => s.activeTabId)
+  const setActiveTab = useNotesStore((s) => s.setActiveTab)
+  const openTab = useNotesStore((s) => s.openTab)
+  const createNote = useNotesStore((s) => s.createNote)
+  const noteIdsWithCollaborators = useNotesStore((s) => s.noteIdsWithCollaborators)
+  const deleteNote = useNotesStore((s) => s.deleteNote)
+  const updateNote = useNotesStore((s) => s.updateNote)
+  const toggleComplete = useNotesStore((s) => s.toggleComplete)
+  const completedOrigins = useNotesStore((s) => s.completedOrigins)
   const sections = useOpsStore((s) => s.sections)
   const activeSectionId = useOpsStore((s) => s.activeSectionId)
   const tasks = useOpsStore((s) => s.tasks)
