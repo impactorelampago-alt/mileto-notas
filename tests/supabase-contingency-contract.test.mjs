@@ -6,6 +6,7 @@ const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const configSource = read('../src/lib/supabase-config.ts')
 const clientSource = read('../src/lib/supabase.ts')
 const viteSource = read('../vite.config.ts')
+const indexSource = read('../index.html')
 const directRestSources = [
   read('../src/stores/notes-store.ts'),
   read('../src/stores/ops-store.ts'),
@@ -34,4 +35,9 @@ test('manual REST calls share the same resolved endpoint and key', () => {
 
 test('the production config accepts the exact contingency path', () => {
   assert.ok(viteSource.includes("normalizedSupabaseUrl === 'https://miletoops.com/_supabase'"))
+})
+
+test('Electron CSP permits HTTPS and WebSocket traffic to the contingency origin', () => {
+  assert.match(indexSource, /connect-src[^;]*https:\/\/miletoops\.com(?:\s|;)/)
+  assert.match(indexSource, /connect-src[^;]*wss:\/\/miletoops\.com(?:\s|;)/)
 })
