@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { SUPABASE_ANON_KEY as SUPABASE_KEY, SUPABASE_URL } from '../lib/supabase-config'
 import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
 import type { Note, NotePermission } from '../lib/types'
@@ -17,9 +18,6 @@ import {
 } from '../lib/local-drafts'
 import { loadCompletedOrigins, persistCompletedOrigins } from '../lib/completed-origins'
 import { useCollabStore } from './collab-store'
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
 let _notesToken: string | null = null
 

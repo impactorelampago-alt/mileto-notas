@@ -1,11 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Variáveis de ambiente VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY são obrigatórias')
-}
+import {
+  SUPABASE_ANON_KEY,
+  SUPABASE_AUTH_STORAGE_KEY,
+  SUPABASE_URL,
+} from './supabase-config'
 
 // O electron-store é a fonte durável principal. O localStorage funciona como
 // espelho de recuperação quando o IPC fica indisponível durante uma atualização
@@ -77,9 +75,10 @@ const electronStorage = {
   },
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     storage: electronStorage,
+    storageKey: SUPABASE_AUTH_STORAGE_KEY,
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,

@@ -146,9 +146,9 @@ Fontes: `src/lib/types.ts`, `src/lib/sections.ts`, `src/lib/status-keys.ts`, `sr
 
 ### 4.1. Cliente Supabase (`src/lib/supabase.ts`)
 
-- Cria o cliente único `supabase` a partir de `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` (lança erro se faltarem).
-- **Persistência de sessão sob medida para Electron:** define um `electronStorage` que, quando existe `window.electronAPI.sessionStorage`, guarda a sessão via bridge (disco do processo principal); senão cai para o `localStorage` do navegador.
-- **Config de auth:** `persistSession: true`, `autoRefreshToken: true`, `detectSessionInUrl: false` (não há fluxo OAuth/redirect hoje) e um `lock` customizado que apenas executa `fn()` sem locking real (o lock padrão do supabase-js via Web Locks API não se comporta bem no Electron).
+- Resolve `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` em `src/lib/supabase-config.ts`. Enquanto o ingress direto `supabase.miletoops.com` estiver retornando Cloudflare 523, ele é encaminhado à contingência saudável `miletoops.com/_supabase`, compartilhada com o Mileto Ops. Auth, REST, Storage e Realtime usam a mesma URL resolvida.
+- **Persistência de sessão sob medida para Electron:** o `electronStorage` guarda a sessão via bridge no disco do processo principal e mantém um espelho de recuperação no `localStorage` do renderer.
+- **Config de auth:** `persistSession: true`, `autoRefreshToken: true`, `detectSessionInUrl: false`, `storageKey: sb-supabase-auth-token` para preservar a sessão na troca de ingress e o `navigator.locks` padrão do Supabase para serializar login/refresh entre janelas.
 
 ### 4.2. Mapeamento nota-raiz ↔ task (1:1), subnota e categoria ↔ custom_status
 

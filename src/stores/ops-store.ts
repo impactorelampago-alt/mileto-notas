@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { SUPABASE_ANON_KEY as SUPABASE_KEY, SUPABASE_URL } from '../lib/supabase-config'
 import { useNotesStore } from './notes-store'
 import { useAuthStore } from './auth-store'
 import { useSharingStore } from './sharing-store'
@@ -12,9 +13,6 @@ import { normalizePriority } from '../lib/note-priority'
 import { ownerPrefixOfKey } from '../lib/sections'
 import { getStatusBase, buildStatusKey } from '../lib/status-keys'
 import { OpsRefreshCoordinator, type OpsRefreshOutcome } from '../lib/ops-refresh-coordinator'
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
 interface OpsAuthContext {
   generation: number

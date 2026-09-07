@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Building2, Check, X } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { SUPABASE_ANON_KEY as SUPABASE_KEY, SUPABASE_URL } from '../../lib/supabase-config'
 import { useAuthStore } from '../../stores/auth-store'
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
 async function restGet<T>(path: string): Promise<T[]> {
   const controller = new AbortController()

@@ -15,7 +15,11 @@ export default defineConfig(({ mode }) => {
     throw new Error(`Configuração obrigatória ausente: ${missingEnv.join(', ')}`)
   }
 
-  if (!/^https:\/\/[^/]+$/i.test(supabaseUrl) || !/^eyJ[^.]+\.[^.]+\.[^.]+$/.test(supabaseAnonKey)) {
+  const normalizedSupabaseUrl = supabaseUrl.replace(/\/+$/, '')
+  const validSupabaseUrl = /^https:\/\/[^/]+$/i.test(normalizedSupabaseUrl)
+    || normalizedSupabaseUrl === 'https://miletoops.com/_supabase'
+
+  if (!validSupabaseUrl || !/^eyJ[^.]+\.[^.]+\.[^.]+$/.test(supabaseAnonKey)) {
     throw new Error('Configuração do Supabase inválida; build cancelado para não publicar uma tela em branco')
   }
 

@@ -9,6 +9,7 @@ const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8
 test('session persists in Electron with a local recovery mirror', () => {
   assert.ok(supabaseSource.includes('persistSession: true'))
   assert.ok(supabaseSource.includes('autoRefreshToken: true'))
+  assert.ok(supabaseSource.includes('storageKey: SUPABASE_AUTH_STORAGE_KEY'))
   assert.ok(supabaseSource.includes('electronAPI.sessionStorage.get(key)'))
   assert.ok(supabaseSource.includes('window.localStorage.getItem(key)'))
   assert.ok(supabaseSource.includes('electronAPI.sessionStorage.set(key, recovered)'))
