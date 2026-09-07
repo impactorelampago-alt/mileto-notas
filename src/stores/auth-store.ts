@@ -78,15 +78,75 @@ interface AuthState {
   loadPermissionSets: () => Promise<void>
 }
 
+const TRANSIENT_AUTH_RETRY_DELAYS_MS = [400, 1_200, 3_000] as const
+
+const wait = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+
+const authFailureMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return String(error ?? '')
+}
+
+const isTransientAuthFailure = (error: unknown): boolean => {
+  if (!error) return false
+
+  const status = error && typeof error === 'object' && 'status' in error
+    ? Number((error as { status?: unknown }).status)
+    : Number.NaN
+  if (status === 408 || status >= 500) return true
+
+  const message = authFailureMessage(error).toLowerCase()
+  return [
+    'failed to fetch',
+    'network',
+    'fetch failed',
+    'timeout',
+    'timed out',
+    'temporarily unavailable',
+    'lock acquire',
+    'aborterror',
+    'econnreset',
+    'econnrefused',
+  ].some((marker) => message.includes(marker))
+}
+
+/**
+ * Repete somente falhas temporárias. Credencial inválida, conta bloqueada,
+ * classificação sem acesso e refresh revogado continuam falhando imediatamente.
+ */
+const retryTransientAuthResult = async <T extends { error: unknown }>(
+  operation: () => Promise<T>,
+  isCurrent: () => boolean = () => true,
+): Promise<T> => {
+  let result = await operation()
+  for (const delay of TRANSIENT_AUTH_RETRY_DELAYS_MS) {
+    if (!result.error || !isTransientAuthFailure(result.error) || !isCurrent()) break
+    await wait(delay)
+    if (!isCurrent()) break
+    result = await operation()
+  }
+  return result
+}
+
 function translateAuthError(message: string): string {
-  if (message.includes('Invalid API key')) return 'Configuração inválida: a chave do Supabase não corresponde à URL. Verifique o .env.'
-  if (message.includes('Invalid login credentials')) return 'Email ou senha incorretos.'
-  if (message.includes('Email not confirmed')) return 'Email não confirmado. Verifique sua caixa de entrada.'
-  if (message.includes('Too many requests')) return 'Muitas tentativas. Aguarde um momento e tente novamente.'
+  const normalized = message.toLowerCase()
+  if (normalized.includes('invalid api key')) return 'Configuração inválida: a chave do Supabase não corresponde à URL. Verifique o .env.'
+  if (normalized.includes('invalid login credentials')) return 'Email ou senha incorretos.'
+  if (normalized.includes('email not confirmed')) return 'Email não confirmado. Verifique sua caixa de entrada.'
+  if (normalized.includes('too many requests') || normalized.includes('rate limit')) {
+    return 'Muitas tentativas. Aguarde um momento e tente novamente.'
+  }
   if (
-    message.includes('fetch') ||
-    message.includes('network') ||
-    message.includes('Failed to fetch')
+    normalized.includes('fetch') ||
+    normalized.includes('network') ||
+    normalized.includes('timeout') ||
+    normalized.includes('timed out')
   )
     return 'Erro de conexão. Verifique sua internet.'
   return 'Erro ao entrar. Tente novamente.'
@@ -231,7 +291,10 @@ export const useAuthStore = create<AuthState>()((set, get) => {
     userId: string,
     evaluationId: number,
   ): Promise<{ profile: Profile | null; stale: boolean; error: string | null }> => {
-    const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single()
+    const { data, error } = await retryTransientAuthResult(
+      async () => await supabase.from('profiles').select('*').eq('id', userId).single(),
+      () => evaluationId === authEvaluationGeneration && get().user?.id === userId,
+    )
     const stale = evaluationId !== authEvaluationGeneration || get().user?.id !== userId
     if (stale) return { profile: null, stale: true, error: null }
     if (error) console.error('[auth] loadProfile:', error.message)
@@ -330,8 +393,10 @@ export const useAuthStore = create<AuthState>()((set, get) => {
         }
       }
 
-      const { data: assurance, error: assuranceError } =
-        await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      const { data: assurance, error: assuranceError } = await retryTransientAuthResult(
+        () => supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+        () => evaluationId === authEvaluationGeneration,
+      )
 
       if (evaluationId !== authEvaluationGeneration) {
         return currentGate()
@@ -367,7 +432,10 @@ export const useAuthStore = create<AuthState>()((set, get) => {
 
       // AAL1 nunca atravessa o gate interno. A lista de fatores decide entre
       // desafiar um autenticador existente e cadastrar o primeiro.
-      const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors()
+      const { data: factors, error: factorsError } = await retryTransientAuthResult(
+        () => supabase.auth.mfa.listFactors(),
+        () => evaluationId === authEvaluationGeneration,
+      )
       if (evaluationId !== authEvaluationGeneration) return currentGate()
 
       if (factorsError || !factors) {
@@ -501,19 +569,28 @@ export const useAuthStore = create<AuthState>()((set, get) => {
 
     initializationPromise = (async () => {
       registerAuthListener()
-      // Rede de segurança: a tela de "Carregando" nunca pode travar. Se o
-      // getSession pendurar (ex: refresh de token lento no self-hosted), libera em 6s.
-      const safety = setTimeout(() => set({ isLoading: false }), 6000)
+      // Durante uma renovação lenta não mostramos o formulário de login, pois isso
+      // parece um logout e incentiva uma segunda autenticação concorrente.
+      const safety = setTimeout(() => {
+        if (get().isLoading) {
+          set({ authError: 'Reconectando sua sessão. Aguarde um momento...' })
+        }
+      }, 6000)
       try {
         const {
           data: { session },
           error,
-        } = await supabase.auth.getSession()
+        } = await retryTransientAuthResult(
+          () => supabase.auth.getSession(),
+          () => !sessionCleanupInProgress,
+        )
 
         if (error) {
           set({ authError: translateAuthError(error.message) })
         } else if (session?.user) {
           await evaluateSession(session)
+        } else {
+          set({ authError: null })
         }
       } catch (error) {
         // Sessão inválida ou erro de rede — usuário não autenticado
@@ -537,9 +614,14 @@ export const useAuthStore = create<AuthState>()((set, get) => {
     cleanupSessionState(true)
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      const signInGeneration = authEvaluationGeneration
+      const { data, error } = await retryTransientAuthResult(
+        () => supabase.auth.signInWithPassword({ email, password }),
+        () => signInGeneration === authEvaluationGeneration && !sessionCleanupInProgress,
+      )
 
       if (error) {
+        console.error('[auth] Falha ao entrar:', error.message)
         return { error: translateAuthError(error.message), mfaRequired: false }
       }
 

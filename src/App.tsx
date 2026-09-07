@@ -11,6 +11,7 @@ import UpdateBanner from './components/UpdateBanner'
 export default function App() {
   const isLoading = useAuthStore((state) => state.isLoading)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
+  const authError = useAuthStore((state) => state.authError)
   const initialize = useAuthStore((state) => state.initialize)
 
   useEffect(() => {
@@ -69,7 +70,9 @@ export default function App() {
           className="h-20 w-20 animate-pulse object-contain"
           style={{ filter: 'drop-shadow(0 4px 18px rgba(16,185,129,0.28))' }}
         />
-        <span className="text-sm text-zinc-500">Carregando...</span>
+        <span className="text-sm text-zinc-500">
+          {authError ?? 'Carregando...'}
+        </span>
       </div>
     </div>
   ) : isAuthenticated ? (

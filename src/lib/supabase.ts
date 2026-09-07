@@ -7,26 +7,73 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Variáveis de ambiente VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY são obrigatórias')
 }
 
+// O electron-store é a fonte durável principal. O localStorage funciona como
+// espelho de recuperação quando o IPC fica indisponível durante uma atualização
+// ou reinicialização do renderer.
+const readLocalSession = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+const writeLocalSession = (key: string, value: string): void => {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // O electron-store continua sendo a fonte durável principal.
+  }
+}
+
+const removeLocalSession = (key: string): void => {
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    // O logout também remove a cópia principal via IPC.
+  }
+}
+
 const electronStorage = {
   getItem: async (key: string): Promise<string | null> => {
-    if (window.electronAPI?.sessionStorage) {
-      return window.electronAPI.sessionStorage.get(key)
+    try {
+      if (window.electronAPI?.sessionStorage) {
+        const persisted = await window.electronAPI.sessionStorage.get(key)
+        if (persisted !== null) {
+          writeLocalSession(key, persisted)
+          return persisted
+        }
+      }
+    } catch {
+      console.warn('[auth-storage] Armazenamento principal indisponível; usando recuperação local.')
     }
-    return localStorage.getItem(key)
+
+    const recovered = readLocalSession(key)
+    if (recovered !== null && window.electronAPI?.sessionStorage) {
+      void window.electronAPI.sessionStorage.set(key, recovered).catch(() => undefined)
+    }
+    return recovered
   },
   setItem: async (key: string, value: string): Promise<void> => {
-    if (window.electronAPI?.sessionStorage) {
-      await window.electronAPI.sessionStorage.set(key, value)
-      return
+    writeLocalSession(key, value)
+    try {
+      if (window.electronAPI?.sessionStorage) {
+        await window.electronAPI.sessionStorage.set(key, value)
+      }
+    } catch {
+      // A sessão permanece recuperável pelo espelho local.
+      console.warn('[auth-storage] Sessão salva somente na recuperação local.')
     }
-    localStorage.setItem(key, value)
   },
   removeItem: async (key: string): Promise<void> => {
-    if (window.electronAPI?.sessionStorage) {
-      await window.electronAPI.sessionStorage.remove(key)
-      return
+    removeLocalSession(key)
+    try {
+      if (window.electronAPI?.sessionStorage) {
+        await window.electronAPI.sessionStorage.remove(key)
+      }
+    } catch {
+      console.warn('[auth-storage] Não foi possível remover a sessão principal.')
     }
-    localStorage.removeItem(key)
   },
 }
 
@@ -36,8 +83,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    lock: (_name: string, _acquireTimeout: number, fn: () => Promise<any>) => fn() as Promise<any>,
+    // Sem override de lock: o Supabase usa navigator.locks no Electron 30.
+    // Assim login e refresh são serializados entre todas as janelas do app.
   },
   realtime: {
     // Heartbeat num Web Worker → IMUNE ao throttle de timer do renderer quando a janela
