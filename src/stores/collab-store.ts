@@ -264,15 +264,26 @@ async function seedState(noteId: string, seed: string): Promise<Uint8Array> {
   seedDoc.getText('content').insert(0, seed ?? '')
   const update = Y.encodeStateAsUpdate(seedDoc)
   seedDoc.destroy()
-  const { error } = await supabase
-    .from('note_yjs')
-    .upsert(
-      { note_id: noteId, state: u8ToB64(update), updated_at: nextWriteTimestamp() },
-      { onConflict: 'note_id', ignoreDuplicates: true },
-    )
-  if (error) throw new Error(`[collab] seed: ${error.message}`)
+
+  // INSERT distingue com segurança "estado ainda não existe" de "estado existe,
+  // mas a RLS o escondeu". O antigo upsert(ignoreDuplicates) tratava os dois casos
+  // como sucesso e abria um documento falso a partir de notes.content; se esse campo
+  // estivesse vazio, a próxima digitação podia sobrescrever o conteúdo verdadeiro.
+  const { error } = await supabase.from('note_yjs').insert({
+    note_id: noteId,
+    state: u8ToB64(update),
+    updated_at: nextWriteTimestamp(),
+  })
+  if (!error) return update
+  if (error.code !== '23505') throw new Error(`[collab] seed: ${error.message}`)
+
+  // Conflito significa que já há um documento canônico. Ele precisa ser legível;
+  // falhar fechado impede que uma permissão divergente produza uma cópia vazia.
   const stored = await loadState(noteId)
-  return stored ? stored.update : update
+  if (!stored) {
+    throw new Error('[collab] seed: estado existente não está legível')
+  }
+  return stored.update
 }
 
 function takePendingSimpleEdit(noteId: string, version?: number): PendingSimpleEdit | null {
