@@ -345,31 +345,6 @@ export default function TabBar() {
     }
   }
 
-  // Garante que a categoria ativa NUNCA fique sem nota: se está vazia, cria uma
-  // em branco. Uma tentativa por categoria (não entra em loop se falhar). Espera
-  // 400ms (deixa o boot criar primeiro, evita nota duplicada). Não cria em
-  // impersonação (visualizando outra conta).
-  const ensuredSectionRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!activeGroup || !activeSectionId) return
-    if (orderedNoteIds.length > 0) {
-      ensuredSectionRef.current = null
-      return
-    }
-    // Nunca auto-cria nota em "Concluído" (DONE) — senão nasceria nota "já concluída".
-    if (activeSectionId === 'DONE') return
-    if (useAuthStore.getState().viewingAs || useAuthStore.getState().viewAll) return
-    const sectionKey = activeGroup.key
-    if (ensuredSectionRef.current === sectionKey) return
-    const t = setTimeout(() => {
-      ensuredSectionRef.current = sectionKey
-      void createNote({ title: 'Sem título', categoryId: null, sectionSuffix: activeSectionId }).catch((e) =>
-        console.error('[TabBar] auto-criar nota vazia:', e),
-      )
-    }, 400)
-    return () => clearTimeout(t)
-  }, [activeGroup, orderedNoteIds.length, activeSectionId, createNote])
-
   return (
     <div
       className="flex items-stretch"

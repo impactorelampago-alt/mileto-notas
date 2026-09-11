@@ -99,7 +99,6 @@ export default function MainApp() {
   const setActiveSectionId = useOpsStore((s) => s.setActiveSectionId)
   const setActiveTab = useNotesStore((s) => s.setActiveTab)
   const hasLoadedOnce = useNotesStore((s) => s.hasLoadedOnce)
-  const createNote = useNotesStore((s) => s.createNote)
   const loadOpsData = useOpsStore((s) => s.loadOpsData)
   const subscribeToOpsChanges = useOpsStore((s) => s.subscribeToOpsChanges)
   const unsubscribeFromOpsChanges = useOpsStore((s) => s.unsubscribeFromOpsChanges)
@@ -225,7 +224,8 @@ export default function MainApp() {
   }, [isAuthenticated, sections, activeSectionId, setActiveSectionId])
 
   // Abertura inicial (depois que a categoria já foi garantida pelo efeito acima):
-  // abre a última nota criada daquela categoria ou, se não houver, cria uma nova.
+  // abre a última nota criada daquela categoria. Se ela estiver vazia, mantém o
+  // editor sem nota até o usuário criar uma explicitamente.
   useEffect(() => {
     if (hasInitialized || !isAuthenticated || !hasLoadedOnce || !activeSectionId) return
 
@@ -320,18 +320,9 @@ export default function MainApp() {
       if (activeId) {
         openTab(activeId)
         setActiveTab(activeId)
-        return
-      }
-
-      // 3. Categoria sem notas → cria uma nova vazia (estilo Bloco de Notas).
-      if (!targetSection) return
-      const newNote = await createNote({ title: 'Sem título', sectionSuffix: targetSection })
-      if (newNote) {
-        openTab(newNote.id)
-        setActiveTab(newNote.id)
       }
     })()
-  }, [hasInitialized, isAuthenticated, hasLoadedOnce, activeSectionId, openTab, setActiveTab, createNote])
+  }, [hasInitialized, isAuthenticated, hasLoadedOnce, activeSectionId, openTab, setActiveTab])
 
   // (Fechar + salvar antes de fechar agora é gerenciado por um handler único em App.tsx)
 
