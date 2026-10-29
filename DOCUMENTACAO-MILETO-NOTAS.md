@@ -146,7 +146,7 @@ Fontes: `src/lib/types.ts`, `src/lib/sections.ts`, `src/lib/status-keys.ts`, `sr
 
 ### 4.1. Cliente Supabase (`src/lib/supabase.ts`)
 
-- Resolve `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` em `src/lib/supabase-config.ts`. Enquanto o ingress direto `supabase.miletoops.com` estiver retornando Cloudflare 523, ele é encaminhado à contingência saudável `miletoops.com/_supabase`, compartilhada com o Mileto Ops. Auth, REST, Storage e Realtime usam a mesma URL resolvida.
+- Resolve `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` em `src/lib/supabase-config.ts`. O endpoint atual é `https://apoloops.com/_supabase`, compartilhado com o Ops. As configurações antigas `supabase.miletoops.com` e `miletoops.com/_supabase` são normalizadas para esse endereço por `src/lib/supabase-endpoint.ts`, também usado na validação do build. Auth, REST, Storage e Realtime usam a mesma URL resolvida; a CSP do Electron permite HTTPS e WebSocket no domínio atual. Banco, JWT, MFA, RLS e chave de persistência da sessão permanecem os mesmos.
 - **Persistência de sessão sob medida para Electron:** o `electronStorage` guarda a sessão via bridge no disco do processo principal e mantém um espelho de recuperação no `localStorage` do renderer.
 - **Config de auth:** `persistSession: true`, `autoRefreshToken: true`, `detectSessionInUrl: false`, `storageKey: sb-supabase-auth-token` para preservar a sessão na troca de ingress e o `navigator.locks` padrão do Supabase para serializar login/refresh entre janelas.
 
